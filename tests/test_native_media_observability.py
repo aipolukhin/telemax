@@ -107,7 +107,7 @@ def test_a_disabled_kind_never_asks_for_an_upload_slot(
     monkeypatch.setattr(
         "bridge.media.native_max.probe_media", lambda path, kind="voice": (1000, bytes(80))
     )
-    from test_native_media_faults import Rig
+    from tests.test_native_media_faults import Rig
 
     rig = Rig(tmp_path, state=NativeMediaState(enabled=False))
     assert rig.send() == 9  # still delivered, plainly
