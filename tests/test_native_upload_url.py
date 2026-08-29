@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_native_media_faults import Rig  # the real send path, faked socket
 
 from bridge.max_client.native_state import UploaderUrlError, check_upload_url
+from tests.test_native_media_faults import Rig  # the real send path, faked socket
 
 GOOD_VOICE = "https://au.oneme.ru/uploadAudio?signatureToken=x&clientType=5"
 GOOD_CIRCLE = "https://vu.oneme.ru/uploadVideo?signatureToken=x"
