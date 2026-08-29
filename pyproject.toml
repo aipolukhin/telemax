@@ -57,7 +57,7 @@ dependencies = [
     # timezone typed by hand was the single most common way to break a config —
     # and `rich` for a layout that survives a 45-column phone terminal.
     "questionary>=2",
-    "rich>=13",
+    "rich>=15.0.0",
     # Reads TZ, /etc/localtime and /etc/timezone in the right order, so the
     # timezone menu can default to the host's own zone.
     "tzlocal>=5",
