@@ -1,0 +1,24 @@
+.worktrees/
+__pycache__/
+*.pyc
+.venv/
+.env
+# Per-install state created by `telemax setup`. The documented shape lives in
+# config.example.yaml; the real file contains an owner id and host paths.
+config.yaml
+config.local.yaml
+data/
+
+# Snapshots taken by scripts/rebootstrap.py — they contain .env and the secrets dir.
+backups/
+
+# Host diagnostics dumps from collect-mini-crash-diagnostics.sh — machine logs,
+# not project history.
+.diagnostics/
+
+# Build, test and coverage output.
+build/
+dist/
+*.egg-info/
+.coverage
+htmlcov/

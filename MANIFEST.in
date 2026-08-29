@@ -1,0 +1,13 @@
+prune tests
+exclude .env
+exclude config.yaml
+include .env.example
+include CHANGELOG.md
+include CONTRIBUTING.md
+include NOTICE
+include SECURITY.md
+include config.example.yaml
+include docs/runbook.md
+include docs/adr/*.md
+include docs/architecture/database-schema.md
+include docs/architecture/delivery-semantics.md

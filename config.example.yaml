@@ -1,0 +1,251 @@
+# Personal MAX <-> Telegram bridge.
+#
+# You should not have to write this file:
+#
+#   python -m bridge setup
+#
+# creates it, asks the four things nothing can detect, starts the service and
+# hands you a link to the guardian bot. Everything after that — connecting MAX,
+# choosing dialogs, status, restarts — happens in that chat. This copy exists
+# to document the knobs, not as a starting point.
+#
+# One Telegram bot = one MAX dialog. No topics, no supergroups: each contact
+# gets their own bot, and that bot talks to nobody but you.
+#
+# Tokens never live in this file. Each bridge names an environment variable;
+# put the values in .env next to this file (see .env.example).
+
+paths:
+  # Everything else defaults to a subdirectory of this one.
+  data_dir: ./data
+  # temp_dir: ./data/tmp
+  # media_cache_dir: ./data/media-cache
+  # secrets_dir: ./data/secrets      # only used when provisioning is on
+  # db_name: bridge.db
+
+telegram:
+  # Your own Telegram user id. Every update from anybody else is dropped.
+  # Any "what is my telegram id" bot will tell you this number.
+  owner_user_id: 111111111
+
+  # A puppet session for your own Telegram account is **required**, not optional.
+  # It is the only thing that sees everything you do — a message, an edit, a
+  # deletion, an album, a reaction, a shared card — and it is the only ingress
+  # for any of it. The contact bots carry messages *to* you and are not a
+  # fallback: there is no configuration under which they carry yours.
+  #
+  # Set it up once with `python -m bridge telegram-sync` (a QR scan). It needs
+  # `TELEMAX_API_ID` and `TELEMAX_API_HASH` in `.env` — from my.telegram.org.
+  #
+  # Until it is authorised and connected, the *owner ingress* is not ready —
+  # one transport, not the bridge. What pauses is your own half: new messages,
+  # edits, deletions and reactions do not reach MAX. What keeps running is the
+  # rest: your contacts' messages still arrive through their bots, the queue is
+  # still held, and the guardian bot still answers — fixing the authorisation is
+  # exactly what it is for. `/status` says which, and one incident
+  # (`owner-session-unavailable`) says it once rather than on every retry.
+
+  # Times are rendered here. Telegram shows its own timestamps in the reader's
+  # device timezone and never tells a bot what that is, so it has to be said.
+  #
+  # `python -m bridge setup` writes `null` and the guardian bot asks as its very
+  # first question — a terminal on a server cannot know what your own clock
+  # says. Setting it by hand here works too; an IANA name, never `UTC+3`.
+  timezone: Europe/Moscow
+
+max:
+  # session_dir: ./data/max-session
+  session_name: max-session.db
+  # Environment variable holding the MAX phone number. Written by the guardian
+  # bot when you connect MAX there; the code and the 2FA password are not kept.
+  phone_env: MAX_PHONE
+
+  # Voice messages and video notes carried into MAX as themselves rather than as
+  # a file and an ordinary video. On by default — this is what the bridge does.
+  #
+  # Turn a kind off when MAX starts refusing it and you would rather not wait for
+  # the breaker to notice: a refused attach also drops the MAX connection, so the
+  # cost of finding out is a reconnect. `/status` tells the two apart — a kind you
+  # switched off reads "disabled", one the breaker stopped reads "breaker-open".
+  #
+  # Voice and circle are separate because the server validates them separately:
+  # the AUDIO validator is the strict one, and a waveform it refuses can still
+  # get a circle through.
+  native_media:
+    enabled: true
+    voice_enabled: true
+    circle_enabled: true
+
+  # How often (seconds) the tail of every bridged chat is re-read and anything
+  # missing is delivered. The catch-up used to run only at start-up and after a
+  # reconnect, so a message the socket never received — or that PyMax refused to
+  # parse — waited for a restart. Nothing is delivered twice: a message that
+  # already has a mapping row is skipped. 0 turns it off.
+  history_reconcile_seconds: 300
+
+  # What your MAX contacts see about *you* while the bridge is running.
+  #
+  # The bridge holds one MAX socket open around the clock, and MAX reads a
+  # connected session as «В сети» — so before this switch existed, every contact
+  # saw the account online twenty-four hours a day. The keepalive frame carries
+  # an `interactive` flag (the same one the app lowers when it goes into the
+  # background), and that is what this sets.
+  #
+  #   mirror  (default) «В сети» only while you are actually writing, reacting
+  #           or editing through the bridge; after `own_presence_idle_seconds`
+  #           of quiet it goes back to a last-seen that stops at your last
+  #           action. What your own phone would show.
+  #   offline never «В сети». Last-seen freezes shortly after each connect and
+  #           nothing you do through the bridge moves it.
+  #   online  the old behaviour: permanently «В сети».
+  #
+  # Messages arrive just the same in every mode — the flag changes what contacts
+  # are told, not what the socket receives.
+  own_presence: mirror
+  own_presence_idle_seconds: 90
+
+media:
+  # Applies to both directions, and the two directions have different real
+  # limits — which is why 20 was the wrong number here.
+  #
+  # Telegram -> MAX is capped at 20 MB by Telegram itself: `getFile` will not
+  # hand a bot anything larger. That cap is enforced separately in
+  # bridge/media/upload.py and does not depend on this setting.
+  #
+  # MAX -> Telegram has no such limit: the file comes off the MAX CDN and is
+  # *uploaded* to Telegram, where a bot may send up to 50 MB. Leaving this at 20
+  # threw away videos Telegram would have accepted, with a placeholder in the
+  # chat and nothing in the log.
+  #
+  # Past 50 MB a local Bot API server is the only way (up to 2000 MB).
+  max_file_size_mb: 50
+
+own_messages:
+  # Carry a message the owner writes in the MAX app into Telegram too.
+  #
+  # Off by default, and on purpose. Telemax is first of all for people who use
+  # the bot *instead* of MAX, so a message typed in the MAX app is the
+  # exception, not the rule. Carrying it needs either a "Вы:" line on the bot's
+  # side, or — to place it as the owner's own on the right — Telegram Premium's
+  # Business connection. When off, such a message is simply not carried.
+  #
+  # This is only the default. The owner can flip it at any time from the
+  # guardian's home screen; their choice there wins over this value.
+  mirror: false
+
+presence:
+  # Contact types in MAX -> the Telegram bot shows "typing".
+  mirror_typing: true
+
+  # Telegram never tells a bot that *you* are typing, so the reverse direction
+  # is synthetic: off | media_only | always.
+  # `media_only` shows "typing" in MAX while the bridge uploads your file.
+  outgoing_typing: media_only
+
+  # Bot API cannot draw ✓✓, so a contact's read mark is rendered by us:
+  #   reaction — 👀 on the last message the contact read, yours included.
+  #              Adds nothing to the conversation — but "adds nothing" is not
+  #              "makes no sound": a reaction on a message *you* wrote may still
+  #              notify you, and Bot API has no way to send one silently. If it
+  #              does ring, turn reactions off in Telegram's own notification
+  #              settings, or use `line`, which is sent silently.
+  #   line     — one bot message at the bottom, edited in place:
+  #              "✓ доставлено 14:10 · ✓✓ прочитано 14:12". Shows the time, at
+  #              the cost of an extra message in the chat.
+  #   suffix   — appends the tick to the text where the bot owns the message.
+  read_receipt_style: reaction
+  read_receipt_suffix: " ✓✓"
+
+  # A pinned line at the top of the bot chat, worded the way MAX words it:
+  # "В сети", "5 мин назад", "Был(-а) вчера в 21:40", "Был(-а) недавно" when the
+  # contact does not share the exact time. The line is edited in place and
+  # re-posted when it gets too old for a bot to edit (48 hours).
+  pin_contact_status: true
+  pin_refresh_seconds: 60
+
+  # When to mark the MAX chat as read on your behalf — this is what draws the
+  # second tick in your contact's MAX app:
+  # on_read (when you actually open the chat) | on_reply (when you answer)
+  # | on_delivery (immediately) | off.
+  # `on_read` uses your own Telegram session, which is told what you have read
+  # on any device; without that session enabled it still marks when you answer.
+  # `on_delivery` changes what your contact sees — they get a read mark whether
+  # or not you actually looked.
+  auto_read: on_read
+
+reactions:
+  # native = mirror as a real Telegram reaction, falling back to a text line
+  # when the emoji has no Telegram equivalent; text = always a text line; off.
+  style: native
+
+  # You react in Telegram the ordinary way; there is no picker and no /react.
+  # Your own session sees every reaction you make — on your messages and on your
+  # contact's — and carries it. A reaction MAX has no equivalent for arrives as a
+  # reply carrying the emoji instead; a custom (premium) emoji is not carried,
+  # because there is no ordinary emoji that *is* it.
+
+  # How often to ask MAX what reactions a dialog carries. MAX announces only a
+  # reaction on the newest message; one put on an older message, and every
+  # removal, is never pushed at all — polling is the only way to see those, and
+  # this is how long they take to show up. 0 turns it off.
+  poll_seconds: 20
+
+  # ...and how often while the dialog is live — for two minutes after anything
+  # happens in it. This is the number that decides whether a reaction feels
+  # immediate; the one above only decides how often a sleeping dialog is asked.
+  poll_active_seconds: 3
+
+provisioning:
+  # off      — bridges come only from this file
+  # guardian — a new MAX contact triggers a question in the guardian bot, you
+  #            create the bot in @BotFather and paste the token back
+  # managed  — Telegram's own Managed Bots: /dialogs in the guardian chat shows
+  #            Telegram's confirmation dialog with the name and username filled
+  #            in, and the token arrives at the guardian by itself. Needs Bot
+  #            Management Mode on the guardian, enabled once in @BotFather's mini
+  #            app, and **no Telegram account credentials at all**.
+  # auto_mtproto — the same Managed Bots creation, plus a full account session on
+  #            disk for two things Bot API cannot do: count every bot the account
+  #            owns (not just this install's) and press /start on a new bot.
+  #            Useful for debugging; not needed in production.
+  #
+  # `setup` writes managed.
+  mode: managed
+  unknown_chat_policy: ask
+  guardian_bot_token_env: TELEMAX_GUARDIAN_TOKEN
+  pending_ttl_days: 7
+  pending_max_messages: 200
+
+  # Bot API cannot read the account's real bot limit, so this is what the counts
+  # are drawn against. Telegram refuses creation on its own when it is reached.
+  # Фолбэк, а не источник правды. Настоящий лимит и настоящее число ботов
+  # аккаунта читает сессия владельца (app config + bots.getAdminedBots) — Bot
+  # API не отдаёт ни того, ни другого. Это число используется только когда
+  # сессии нет или она молчит; тогда экран честно говорит, что считает своих.
+  # Измерено: bots_create_limit_default=20, bots_create_limit_premium=40.
+  assumed_bot_limit: 20
+  # Как создаются контактные боты. true — @BotFather через сессию владельца
+  # (нужны TELEMAX_API_ID/TELEMAX_API_HASH и связанная сессия); false или
+  # отсутствие сессии — диалог managed-ботов Telegram.
+  #
+  # По умолчанию true, и это выбрано по замерам, а не по вкусу. Managed-боты
+  # красивее — ни прозы для разбора, ни аккаунтного секрета, существующий бот
+  # переиспользуется, — и ломаются там, где обойти нельзя: кнопка Create в
+  # диалоге Telegram дважды отказалась нажиматься на живой установке.
+  #
+  # У пути через BotFather своя цена, и она оплачена: неразмеченная пачка
+  # /newbot когда-то заперла аккаунт на 58000 секунд. Лечится темпом и
+  # честным чтением «try again in N seconds» — см. MtprotoProvisioner.
+  use_owner_session: true
+
+log_level: INFO
+
+bridges:
+  - name: mom
+    max_chat_id: 1234567890123
+    telegram_bot_token_env: TELEMAX_BOT_MOM
+
+  - name: dad
+    max_chat_id: 9876543210987
+    telegram_bot_token_env: TELEMAX_BOT_DAD
+    enabled: true
