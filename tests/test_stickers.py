@@ -244,9 +244,8 @@ async def test_a_lottie_sticker_is_downloaded_as_tgs_and_not_rejected(tmp_path: 
     animation away; and `sendSticker` reads the extension, so a file not named
     `.tgs` is refused even when the bytes are right.
     """
-    from test_media import FakeProtocol, FakeSession, fetcher_for
-
     from bridge.media import MaxMediaSources, MediaPipeline, TempFiles
+    from tests.test_media import FakeProtocol, FakeSession, fetcher_for
 
     body = gzip.compress(b'{"v":"5.5.2","w":512,"h":512,"fr":60,"op":180}')
     pipeline = MediaPipeline(
