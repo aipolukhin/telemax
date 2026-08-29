@@ -44,7 +44,7 @@ dependencies = [
     "av>=13",
     "pydantic>=2.13",
     "pyyaml>=6",
-    "python-dotenv>=1",
+    "python-dotenv>=1.2.3",
     # Two things need the owner's own Telegram account over MTProto: creating a
     # bot (Bot API has no method, and @BotFather cannot be talked to by another
     # bot) and the owner's user-session intake (`telegram/user_session.py`).
