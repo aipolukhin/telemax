@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_media import FakeSession, fetcher_for
 
 from bridge.max_client import MaxContact
 from bridge.media import MediaPipeline, TempFiles
@@ -25,6 +24,7 @@ from bridge.provisioning import BotProfileSync
 from bridge.provisioning.avatar import AvatarUnusableError, to_profile_jpeg
 from bridge.provisioning.profile import NAME_SUFFIX, build_bot_name, signature_of
 from bridge.provisioning.secrets import ContactBotSecretStore
+from tests.test_media import FakeSession, fetcher_for
 
 
 def make_image(width: int, height: int, fmt: str = "WEBP") -> bytes:

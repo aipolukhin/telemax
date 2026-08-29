@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_media import JPEG, MP4, OGG, PDF, FakeProtocol, FakeSession, fetcher_for
 
 from bridge.max_client import AttachmentKind, MaxAttachment, normalize_message
 from bridge.max_client.events import normalize_attachment
@@ -30,13 +29,14 @@ from bridge.media.delivery import (
     call_text,
     ms_to_seconds,
 )
+from tests.test_media import JPEG, MP4, OGG, PDF, FakeProtocol, FakeSession, fetcher_for
 
 
 class MixedSession(FakeSession):
     """Serves bytes that match the URL, so a mixed message can be tested."""
 
     def get(self, url: str) -> Any:
-        from test_media import FakeResponse
+        from tests.test_media import FakeResponse
 
         self.requested.append(url)
         if ".ogg" in url or "audio" in url:

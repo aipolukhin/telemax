@@ -18,11 +18,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fake_provisioning import FakeGateway, FakeProvisioner
 
 from bridge.provisioning.coordinator import ProvisioningCoordinator
 from bridge.provisioning.journal import ItemState, JournalEntry, ProvisioningJournal
 from bridge.provisioning.reconcile import Outcome, ProvisioningReconciler, Verdict
+from tests.fake_provisioning import FakeGateway, FakeProvisioner
 
 pytestmark = pytest.mark.asyncio
 

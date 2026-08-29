@@ -6,6 +6,7 @@ include CHANGELOG.md
 include CONTRIBUTING.md
 include NOTICE
 include SECURITY.md
+include THIRD_PARTY.md
 include config.example.yaml
 include docs/runbook.md
 include docs/adr/*.md
