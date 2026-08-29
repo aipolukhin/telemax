@@ -111,6 +111,24 @@ systemctl --user status telemax.service
   несовместимости;
 - удаление бота или сессии вне Telemax требует повторного подключения.
 
+## Основа и благодарности
+
+Telemax не реализует клиенты мессенджеров с нуля. Ключевые upstream-
+проекты:
+
+- [PyMax](https://github.com/MaxApiTeam/PyMax) (`maxapi-python`) — MAX-сессия,
+  события, чаты и базовые операции; Telemax фиксирует проверенную версию;
+- [aiogram](https://github.com/aiogram/aiogram) — Telegram Bot API, боты контактов и
+  бот-страж;
+- [Telethon](https://codeberg.org/Lonami/Telethon) — owner-session Telegram и MTProto;
+- [aiohttp](https://github.com/aio-libs/aiohttp),
+  [PyAV](https://github.com/PyAV-Org/PyAV) и
+  [Pillow](https://github.com/python-pillow/Pillow) — HTTP и медиапайплайн.
+
+Полный список прямых runtime-зависимостей, ссылок и лицензий — в
+[`THIRD_PARTY.md`](THIRD_PARTY.md). Авторские права на эти проекты остаются у их
+авторов и контрибьюторов.
+
 ## Разработка
 
 ```bash

@@ -16,10 +16,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import test_native_media
-from test_native_media_faults import Rig
-
 from bridge.max_client.client import MaxClient
+from tests import test_native_media
+from tests.test_native_media_faults import Rig
 
 
 def parameters_of(function: Any) -> list[str]:

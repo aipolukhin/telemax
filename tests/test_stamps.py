@@ -13,13 +13,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest_asyncio
-from test_routing import CONTACT, MOM, OWNER_CHAT, OWNER_MAX_ID, FakeLookup, FakeTelegram
 
 from bridge.config import TimestampStyle
 from bridge.formatting import format_stamp
 from bridge.max_client import normalize_message
 from bridge.routing import BridgeRouter
 from bridge.storage import BridgeStateRepository, Database, MessageMapRepository
+from tests.test_routing import CONTACT, MOM, OWNER_CHAT, OWNER_MAX_ID, FakeLookup, FakeTelegram
 
 NOW = datetime(2026, 7, 29, 14, 30)
 
@@ -161,4 +161,3 @@ async def test_entities_move_with_the_stamp(stamped: Any) -> None:
     assert entities is not None
     offset, length = entities[0]["offset"], entities[0]["length"]
     assert text[offset : offset + length] == "жирный"
-
