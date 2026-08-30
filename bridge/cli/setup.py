@@ -18,7 +18,7 @@ def run(
     path: Path | None = None,
     *,
     instance: str | None = None,
-    use_session: bool = False,
+    use_session: bool = True,
     adopt: bool = False,
 ) -> int:
     return run_bootstrap(path, instance=instance, use_session=use_session, adopt=adopt)

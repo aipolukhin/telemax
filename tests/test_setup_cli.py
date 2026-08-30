@@ -50,7 +50,6 @@ GUARDIAN_TOKEN = "9000000003:AAF-dummy-token-value-for-tests-0000"
 ANSWERS = {
     "API ID": "28972505",
     "API Hash": API_HASH,
-    "Номер телефона": "+79001234567",
 }
 
 
@@ -182,6 +181,9 @@ class FakeSession:
     async def close(self) -> None:
         return None
 
+    async def send_start(self, username: str, bot_id: int | None = None) -> None:
+        return None
+
 
 @dataclass
 class FakeServiceManager:
@@ -222,12 +224,20 @@ def sandbox(tmp_path: Path, monkeypatch: Any) -> Any:
     async def fake_connect(plan: Any, ui: Any, *, journal: Any = None) -> Any:
         # Ask exactly what the real one asks, so the transcript is honest.
         from bridge.bootstrap.telegram import connect_account
+        from bridge.telegram.user_session import AuthorizedOwner, ConnectedOwner
 
-        monkeypatch.setattr("bridge.provisioning.mtproto.connect", _refuse_network)
-        try:
-            return await connect_account(plan, ui, journal=journal)
-        except _NoNetwork:
-            return session
+        async def scan(**_: Any) -> ConnectedOwner:
+            return ConnectedOwner(
+                owner=AuthorizedOwner(
+                    account_id=account.owner_user_id,
+                    name="Owner",
+                    username="owner",
+                ),
+                session=session,  # type: ignore[arg-type]
+            )
+
+        monkeypatch.setattr("bridge.bootstrap.telegram.connect_owner_session", scan)
+        return await connect_account(plan, ui, journal=journal)
 
     async def fake_guardian(
         plan: Any, ui: Any, _session: Any, **_: Any
@@ -253,14 +263,6 @@ def sandbox(tmp_path: Path, monkeypatch: Any) -> Any:
     manager = FakeServiceManager(installed=[])
     plan = read_plan(tmp_path / "config.yaml")
     return plan, manager, delivered
-
-
-class _NoNetwork(Exception):  # noqa: N818 - a fence, not a failure
-    pass
-
-
-async def _refuse_network(**_: object) -> Any:
-    raise _NoNetwork
 
 
 def test_the_console_never_asks_about_max(sandbox: Any) -> None:
@@ -323,7 +325,6 @@ def test_no_credential_is_ever_printed(sandbox: Any) -> None:
 
     assert API_HASH not in ui.transcript
     assert GUARDIAN_TOKEN not in ui.transcript
-    assert "+79001234567" not in ui.transcript
     assert any(question.startswith("API Hash") for question in ui.hidden), "api_hash is hidden"
 
 
@@ -356,7 +357,7 @@ def test_ctrl_c_leaves_nothing_behind(sandbox: Any) -> None:
 def test_a_cancel_at_the_prompts_takes_the_credentials_back(sandbox: Any) -> None:
     """"Изменения не сохранены" has to be literally true."""
     plan, manager, _ = sandbox
-    ui = FakeUi(answers=ANSWERS, cancel_on={"Номер телефона"})
+    ui = FakeUi(answers=ANSWERS, cancel_on={"API Hash"})
 
     code = asyncio.run(flow.bootstrap(plan, ui, manager=manager))
 
@@ -442,3 +443,23 @@ def test_an_existing_config_is_edited_not_replaced(sandbox: Any) -> None:
     assert "# Personal bridge." in text, "somebody's comments are not ours to delete"
     assert "timezone:" not in text, "an existing config keeps whatever it already said"
     assert "owner_user_id: 100000001" in text
+
+
+def test_setup_command_defaults_to_qr_and_manual_guardian_is_explicit(
+    monkeypatch: Any,
+) -> None:
+    from bridge import __main__ as entrypoint
+
+    calls: list[dict[str, Any]] = []
+
+    def capture(_path: Any, **kwargs: Any) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(entrypoint.setup_cli, "run", capture)
+
+    assert entrypoint.main(["setup"]) == 0
+    assert calls[-1]["use_session"] is True
+
+    assert entrypoint.main(["setup", "--manual-guardian"]) == 0
+    assert calls[-1]["use_session"] is False

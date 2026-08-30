@@ -46,7 +46,6 @@ from .telegram import (
     TelegramAccount,
     connect_account,
     ensure_guardian,
-    offer_owner_session,
 )
 from .ui import SetupCancelled, Ui
 
@@ -98,6 +97,21 @@ def install_service(
     return path
 
 
+async def _open_guardian_chat(account: TelegramAccount) -> bool:
+    """Press Start as the owner before the runtime takes over the session file."""
+    from bridge.provisioning.mtproto import bot_id_of
+
+    try:
+        await account.session.send_start(
+            account.guardian_username,
+            bot_id=bot_id_of(account.guardian_token),
+        )
+    except Exception:  # noqa: BLE001 - handoff still has bot/link fallbacks
+        logger.warning("could not open the Guardian chat from the owner session")
+        return False
+    return True
+
+
 async def _deliver_link(
     plan: Plan, ui: Ui, account: TelegramAccount
 ) -> handoff_module.Handoff:
@@ -144,27 +158,6 @@ def _final_screen(ui: Ui, account: TelegramAccount, result: handoff_module.Hando
     ui.plain("Откройте Telegram и завершите настройку в боте.")
     ui.plain()
     ui.note("Можно закрыть терминал.")
-
-
-async def _expected_guardian(plan: Plan, session: Any) -> str | None:
-    """The V2 guardian name, when both owner accounts can be established.
-
-    None means "fall back to the V1 name", which only ever recognises a guardian
-    that already exists under it. Deliberately quiet: this is the session path,
-    kept for debugging, and a missing MAX session there is a reason to use the
-    old name rather than to stop.
-    """
-    telegram: int | None = plan.owner_user_id
-    reader = getattr(session, "own_user_id", None)
-    if telegram is None and reader is not None:
-        with contextlib.suppress(Exception):
-            telegram = await reader()
-    try:
-        return (
-            await owner_identities(plan, telegram_user_id=telegram)
-        ).guardian_username
-    except IdentityUnavailableError:
-        return None
 
 
 async def _guardian_plan(plan: Plan, ui: Ui, *, adopt: bool) -> tuple[str | None, int | None]:
@@ -249,13 +242,6 @@ async def bootstrap_managed(
             ),
         )
 
-        # The optional owner-session QR link, in the main flow rather than only in
-        # a separate command. It authorises a session and nothing more — intake
-        # stays disabled, delivery and runtime are untouched.
-        await offer_owner_session(
-            plan, ui, owner_user_id=guardian.owner_user_id, journal=written
-        )
-
         install_service(plan, ui, manager=manager, instance=instance)
         undo.append(manager.uninstall)
         undo.clear()
@@ -297,26 +283,30 @@ async def bootstrap(
     # phone, and throwing it away would make a re-run harder, not cleaner.
     written: list[str] = []
     guardian_exists = False
+    session: Any | None = None
+    restore_previous_service = False
     try:
         ui.banner()
 
         ui.step(1, TOTAL_STEPS, "Telegram")
+
+        # A re-run must not open the same Telethon SQLite session beside the
+        # live runtime. Stop it before QR/session work and restore it on any
+        # failed setup; a successful install starts the replacement itself.
+        is_active = getattr(manager, "is_active", None)
+        if callable(is_active) and is_active():
+            manager.stop()
+            restore_previous_service = True
 
         def forget() -> None:
             _forget(plan, written)
 
         undo.append(forget)
         session = await connect_account(plan, ui, journal=written)
-        # The V2 name when both owner accounts can be established, and the V1
-        # one otherwise — which only ever recognises a guardian that already
-        # exists under it.
-        expected = await _expected_guardian(plan, session)
         # The guardian may already exist from a previous bootstrap. Recreating
         # it means deleting it, and deleting it means the process holding its
         # token has to be gone first — hence `stop_runtime`.
-        account = await ensure_guardian(
-            plan, ui, session, stop_runtime=manager.stop, expected_username=expected
-        )
+        account = await ensure_guardian(plan, ui, session, stop_runtime=manager.stop)
         # From here a re-run must find the bot it already made: forgetting the
         # credentials would strand that bot in @BotFather and burn one of the
         # twenty an account is allowed.
@@ -328,24 +318,33 @@ async def bootstrap(
         if created:
             undo.append(lambda: plan.config_path.unlink(missing_ok=True))
 
-        StateStore.for_data_dir(plan.data_dir).update(
+        store = StateStore.for_data_dir(plan.data_dir)
+        previous = store.load()
+        store.update(
             stage=Stage.BOOTSTRAP_CONFIGURED,
             owner_user_id=account.owner_user_id,
             guardian_username=account.guardian_username,
+            guardian_naming=previous.guardian_naming or NamingVersion.V3.value,
         )
 
-        await offer_owner_session(
-            plan, ui, owner_user_id=account.owner_user_id, journal=written
-        )
+        # The runtime uses this exact SQLite session file. Open the Guardian
+        # conversation while setup owns it, then disconnect before systemd can
+        # start another Telethon client on the same credential.
+        with ui.working("Открываю чат с ботом-стражем…"):
+            opened = await _open_guardian_chat(account)
+            await account.session.close()
+            session = None
+        if opened:
+            ui.ok("Чат с ботом-стражем открыт")
+        else:
+            ui.warn("Не смог открыть чат автоматически — покажу ссылку в конце.")
 
         install_service(plan, ui, manager=manager, instance=instance)
+        restore_previous_service = False
         undo.append(manager.uninstall)
 
         result = await _deliver_link(plan, ui, account)
         undo.clear()
-
-        with contextlib.suppress(Exception):
-            await account.session.close()
 
         _final_screen(ui, account, result)
         return 0
@@ -372,6 +371,15 @@ async def bootstrap(
         ui.fail(f"Не довёл до конца: {_short(error)}")
         ui.note("Запустите `python -m bridge setup` ещё раз — сделанное не повторится.")
         return 1
+    finally:
+        if session is not None:
+            with contextlib.suppress(Exception):
+                await session.close()
+        if restore_previous_service:
+            restart = getattr(manager, "restart", None)
+            if callable(restart):
+                with contextlib.suppress(Exception):
+                    restart()
 
 
 def _load_existing_env(plan: Plan) -> None:
@@ -415,15 +423,14 @@ def run(
     *,
     ui: Ui | None = None,
     instance: str | None = None,
-    use_session: bool = False,
+    use_session: bool = True,
     adopt: bool = False,
 ) -> int:
-    """Install. `use_session` picks the old account-session path, for debugging.
+    """Install through one QR-authenticated Telegram owner session.
 
-    The default needs no account credential: Managed Bots create the contact bots
-    and the owner's own tap identifies them. The session path is kept because it
-    can still create the *first* guardian by itself, which is the one thing the
-    default asks a person to do by hand.
+    ``use_session=False`` remains the explicit manual-Guardian recovery path.
+    Normal setup scans one QR, creates or reuses Guardian through @BotFather,
+    starts it, and hands the rest of onboarding to Telegram.
 
     `adopt` is the explicit legacy path: take whatever guardian the owner already
     has, at whatever name, instead of deriving one from the two owner accounts.
@@ -432,12 +439,14 @@ def run(
     _load_existing_env(plan)
     console = ui or Ui()
     manager = ServiceManager(instance=instance)
-    if use_session:
-        return _run(bootstrap(plan, console, manager=manager, instance=instance), console)
-    return _run(
-        bootstrap_managed(plan, console, manager=manager, instance=instance, adopt=adopt),
-        console,
-    )
+    if not use_session or adopt:
+        return _run(
+            bootstrap_managed(
+                plan, console, manager=manager, instance=instance, adopt=True
+            ),
+            console,
+        )
+    return _run(bootstrap(plan, console, manager=manager, instance=instance), console)
 
 
 def _run(flow: Coroutine[Any, Any, int], console: Ui) -> int:

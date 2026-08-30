@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from bridge.config import TimestampStyle
-from bridge.provisioning.mtproto import harden
+from bridge.provisioning.mtproto import BotFatherSession, harden
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +204,20 @@ class AuthorizedOwner:
     username: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class ConnectedOwner:
+    """A QR-authorised owner plus the live session setup may temporarily use.
+
+    The client is wrapped as a ``BotFatherSession`` so bootstrap can create the
+    first Guardian through the same Telegram credential production will later
+    use for owner-side updates. Ownership stays with the wrapper: callers close
+    it before the runtime opens the session file again.
+    """
+
+    owner: AuthorizedOwner
+    session: BotFatherSession
+
+
 class SessionHealth(Protocol):
     """The two health calls this transport makes — `HealthService` implements them."""
 
@@ -320,10 +334,42 @@ async def authorize_owner_session(
     `api_hash` is never logged, echoed or returned. The QR url reaches the caller
     only through `on_qr`, which the console renders and never persists.
     """
-    # One directory creation while a human is at the console; not worth an async
-    # filesystem layer, same calls the provisioning session makes. 0700 on the
-    # directory, 0600 on the file (via `harden`): the session is a whole-account
-    # credential and is treated like one.
+    connected = await connect_owner_session(
+        api_id=api_id,
+        api_hash=api_hash,
+        secrets_dir=secrets_dir,
+        owner_user_id=owner_user_id,
+        on_qr=on_qr,
+        password_provider=password_provider,
+        client_factory=client_factory,
+        refresh_seconds=refresh_seconds,
+        max_refreshes=max_refreshes,
+    )
+    try:
+        return connected.owner
+    finally:
+        await connected.session.close()
+
+
+async def connect_owner_session(
+    *,
+    api_id: int,
+    api_hash: str,
+    secrets_dir: Path,
+    owner_user_id: int | None,
+    on_qr: Callable[[str], Awaitable[None]] | Callable[[str], None],
+    password_provider: Callable[[str], Awaitable[str]] | Callable[[str], str] | None = None,
+    client_factory: TelethonFactory = _default_factory,
+    refresh_seconds: float = QR_REFRESH_SECONDS,
+    max_refreshes: int = QR_MAX_REFRESHES,
+) -> ConnectedOwner:
+    """Open the canonical owner session by QR and leave it connected for setup.
+
+    A first install does not know ``owner_user_id`` yet; the scanned account is
+    therefore the source of truth. Re-runs pass the id from config and retain
+    the existing wrong-account protection. There is deliberately no phone/code
+    login and no second provisioning session file.
+    """
     secrets_dir.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
     os.chmod(secrets_dir, stat.S_IRWXU)
     path = user_session_path(secrets_dir)
@@ -331,29 +377,39 @@ async def authorize_owner_session(
     await client.connect()
 
     try:
-        if await client.is_user_authorized():
-            owner = await _verify_or_discard(client, path, owner_user_id)
-            logger.info("reused an existing Telegram user session")
-            return owner
-        await _run_qr(
-            client,
-            on_qr=on_qr,
-            password_provider=password_provider,
-            refresh_seconds=refresh_seconds,
-            max_refreshes=max_refreshes,
-        )
+        reused = await client.is_user_authorized()
+        if not reused:
+            await _run_qr(
+                client,
+                on_qr=on_qr,
+                password_provider=password_provider,
+                refresh_seconds=refresh_seconds,
+                max_refreshes=max_refreshes,
+            )
         owner = await _verify_or_discard(client, path, owner_user_id)
-        logger.info("authorised a new Telegram user session")
-        return owner
-    finally:
+        logger.info(
+            "%s Telegram owner session",
+            "reused an existing" if reused else "authorised a new",
+        )
+        return ConnectedOwner(
+            owner=owner,
+            session=BotFatherSession(client, secrets_dir),
+        )
+    except Exception:
         with contextlib.suppress(Exception):
             await client.disconnect()
+        raise
 
 
-async def _verify_or_discard(client: Any, path: Path, owner_user_id: int) -> AuthorizedOwner:
+async def _verify_or_discard(
+    client: Any, path: Path, owner_user_id: int | None
+) -> AuthorizedOwner:
     me = await client.get_me()
     account_id = int(getattr(me, "id", 0) or 0)
-    if account_id != owner_user_id:
+    if not account_id:
+        await _discard(client, path)
+        raise OwnerMismatchError("Telegram не вернул id аккаунта — сессия удалена")
+    if owner_user_id is not None and account_id != owner_user_id:
         await _discard(client, path)
         raise OwnerMismatchError(
             "этот Telegram-аккаунт не совпадает с владельцем Telemax — сессия удалена"

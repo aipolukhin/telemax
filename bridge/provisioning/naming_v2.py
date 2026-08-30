@@ -59,6 +59,10 @@ SCHEME_VERSION = 1
 #: land on one name even for identical numbers.
 CONTACT_DOMAIN = "telemax-contact-bot-v2"
 GUARDIAN_DOMAIN = "telemax-guardian-bot-v2"
+# The Guardian must exist before MAX is connected: it is the surface where MAX
+# login happens. V3 therefore keys the Guardian only on its Telegram owner. The
+# contact-bot contract remains V2 and still includes both Telegram and MAX ids.
+GUARDIAN_V3_DOMAIN = "telemax-guardian-bot-v3"
 
 #: 20 base32 characters — 100 bits. Above the 96-bit floor, and both suffixes
 #: still fit in Telegram's 32.
@@ -81,6 +85,8 @@ class NamingVersion(StrEnum):
     LEGACY = "v1-naming-secret"
     #: SHA-256 over the owner and peer ids. Recomputable anywhere.
     V2 = "v2-account-identity"
+    #: Guardian-only contract: available before the MAX account is connected.
+    V3 = "v3-telegram-owner"
     #: A guardian whose token was pasted in by hand, whose username is whatever
     #: the owner called it. Truth is what `getMe` says, and nothing else.
     ADOPTED = "adopted"
@@ -178,6 +184,25 @@ def guardian_bot_username_v2(telegram_owner_user_id: int, max_owner_user_id: int
         )
         + GUARD_SUFFIX
     )
+
+
+def guardian_bot_username_v3(telegram_owner_user_id: int) -> str:
+    """The first-install Guardian, derived before a MAX account exists.
+
+    One Telegram owner gets one Guardian. MAX can then be linked, replaced or
+    recovered inside that bot without changing the chat the owner already uses
+    to control Telemax.
+    """
+    label = GUARDIAN_V3_DOMAIN.encode("ascii")
+    message = b"".join(
+        (
+            SCHEME_VERSION.to_bytes(1, "big"),
+            len(label).to_bytes(2, "big"),
+            label,
+            _u64(telegram_owner_user_id, what="telegram owner id"),
+        )
+    )
+    return ensure_username(encode_username(hashlib.sha256(message).digest()) + GUARD_SUFFIX)
 
 
 def names_a_contact_bot(username: str) -> bool:

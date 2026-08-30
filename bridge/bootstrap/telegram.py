@@ -25,11 +25,8 @@ from typing import Any
 from bridge.config.writer import set_env_value
 from bridge.phone import normalize as normalize_phone
 from bridge.provisioning import mtproto
-from bridge.provisioning.naming import (
-    GUARD_DISPLAY_NAME,
-    guard_username,
-    load_or_create_naming_secret,
-)
+from bridge.provisioning.naming import GUARD_DISPLAY_NAME
+from bridge.provisioning.naming_v2 import guardian_bot_username_v3
 from bridge.provisioning.provisioner import (
     ForeignUsernameError,
     MtprotoProvisioner,
@@ -44,6 +41,7 @@ from bridge.telegram.user_session import (
     SYNC_SCAN_HINT,
     OwnerMismatchError,
     authorize_owner_session,
+    connect_owner_session,
     qr_ascii,
     user_session_path,
 )
@@ -145,42 +143,45 @@ async def _remembered(
 async def connect_account(
     plan: Plan, ui: Ui, *, journal: list[str] | None = None
 ) -> mtproto.BotFatherSession:
-    """Log the owner's Telegram account in, asking for a code if there is none."""
+    """Open the one production Telegram account session, by QR.
+
+    The same ``telegram-user.session`` is used temporarily for @BotFather here
+    and later by the running bridge for owner-side Telegram events. Setup closes
+    it before starting the service, so two clients never write one session.
+    """
     ui.note(API_HELP)
     ui.plain()
 
     ask = partial(_remembered, plan, ui=ui, journal=journal)
     api_id = await ask(plan.api_id_env, question="API ID:")
     api_hash = await ask(plan.api_hash_env, question="API Hash:", hidden=True)
-    phone = await ask(plan.phone_env, question="Номер телефона:")
 
-    sent = False
-
-    async def code(_: str) -> str:
-        # Telethon calls this from inside `connect`; `mtproto._ask` awaits
-        # whatever it returns, so an async prompt fits without a thread.
-        nonlocal sent
-        if not sent:
-            ui.ok("Код отправлен")
-            sent = True
-        return await ui.ask("Код из Telegram:", validate=valid_nonempty)
+    async def on_qr(url: str) -> None:
+        ui.plain()
+        ui.plain(qr_ascii(url))
+        for line in SYNC_SCAN_HINT.splitlines():
+            ui.plain(line)
 
     async def password(_: str) -> str:
         return await ui.secret("Пароль 2FA:", validate=valid_nonempty)
 
-    with ui.working("Подключаюсь к Telegram…"):
-        session = await mtproto.connect(
-            api_id=int(api_id),
-            api_hash=api_hash,
-            phone=phone,
-            secrets_dir=plan.secrets_dir,
-            code_provider=code,
-            password_provider=password,
-        )
+    ui.note("Сейчас появится QR-код для Telegram.")
+    connected = await connect_owner_session(
+        api_id=int(api_id),
+        api_hash=api_hash,
+        secrets_dir=plan.secrets_dir,
+        owner_user_id=plan.owner_user_id,
+        on_qr=on_qr,
+        password_provider=password,
+    )
 
-    ui.ok("Telegram подключён")
-    ui.ok("Сессия сохранена (0600)")
-    return session
+    ui.ok(
+        f"Telegram: {connected.owner.name or 'аккаунт без имени'}"
+        f" · ID {connected.owner.account_id}"
+    )
+    ui.ok(f"Сессия: {user_session_path(plan.secrets_dir)} (0600)")
+    ui.note(SYNC_ACCESS_WARNING)
+    return connected.session
 
 
 async def offer_owner_session(
@@ -355,16 +356,14 @@ async def ensure_guardian(
         )
     ui.ok(f"Ваш Telegram id: {owner_user_id}")
 
-    # V2 when the caller could establish both owner accounts, V1 otherwise. V1
-    # is kept for exactly one case: an installation that already has a guardian
-    # under a `naming-secret` name, where recomputing it is the only way to
-    # recognise the bot that exists. Nothing new is minted under V1.
+    # A remembered username always wins: existing V1/V2/adopted installations
+    # keep their Guardian chat. Fresh installs use V3, which needs only the
+    # Telegram owner because MAX is connected *inside* that Guardian afterwards.
     if expected_username:
         username = expected_username
     else:
-        ui.warn("Имя стража считается по старому контракту (naming-secret).")
-        secret = load_or_create_naming_secret(plan.secrets_dir)
-        username = guard_username(secret, owner_user_id)
+        remembered = os.environ.get(f"{plan.guardian_token_env}_USERNAME", "").strip()
+        username = remembered.lower() or guardian_bot_username_v3(owner_user_id)
     provisioner = MtprotoProvisioner(session, sleep=sleep or asyncio.sleep)
 
     with ui.working("Проверяю имя бота-стража…"):
@@ -440,5 +439,3 @@ async def ensure_guardian(
         guardian_username=created.username,
         guardian_token=created.token,
     )
-
-

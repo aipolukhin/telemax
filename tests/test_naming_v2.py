@@ -22,12 +22,14 @@ from bridge.provisioning.naming import CONTACT_SUFFIX, GUARD_SUFFIX, validate_us
 from bridge.provisioning.naming_v2 import (
     CONTACT_DOMAIN,
     GUARDIAN_DOMAIN,
+    GUARDIAN_V3_DOMAIN,
     MAX_ID,
     SLUG_LENGTH,
     IdentityError,
     NamingVersion,
     contact_bot_username_v2,
     guardian_bot_username_v2,
+    guardian_bot_username_v3,
 )
 
 #: Synthetic account ids used as the anchor pair throughout.
@@ -64,6 +66,18 @@ def test_guardian_vectors(telegram_owner: int, max_owner: int, expected: str) ->
     assert guardian_bot_username_v2(telegram_owner, max_owner) == expected
 
 
+@pytest.mark.parametrize(
+    ("telegram_owner", "expected"),
+    [
+        (OWNER_TG, "dnee7ev6p5iqyhafbqkg_telemax_bot"),
+        (0, "viggadw25qjeznhx5z5w_telemax_bot"),
+        (MAX_ID, "vazx45kxwp6npt6s3iew_telemax_bot"),
+    ],
+)
+def test_guardian_v3_vectors(telegram_owner: int, expected: str) -> None:
+    assert guardian_bot_username_v3(telegram_owner) == expected
+
+
 # --------------------------------------------------------------- properties
 
 
@@ -89,6 +103,11 @@ def test_a_different_max_owner_gets_a_different_guardian() -> None:
     assert guardian_bot_username_v2(OWNER_TG, OWNER_MAX) != guardian_bot_username_v2(
         OWNER_TG, OWNER_MAX + 1
     )
+
+
+def test_v3_guardian_exists_before_max_and_stays_when_max_changes() -> None:
+    assert guardian_bot_username_v3(OWNER_TG) == guardian_bot_username_v3(OWNER_TG)
+    assert guardian_bot_username_v3(OWNER_TG) != guardian_bot_username_v3(OWNER_TG + 1)
 
 
 def test_the_two_namespaces_never_meet() -> None:
@@ -195,6 +214,8 @@ def test_the_domains_are_distinct_and_versioned() -> None:
     assert CONTACT_DOMAIN != GUARDIAN_DOMAIN
     assert CONTACT_DOMAIN.endswith("-v2")
     assert GUARDIAN_DOMAIN.endswith("-v2")
+    assert GUARDIAN_V3_DOMAIN.endswith("-v3")
+    assert GUARDIAN_V3_DOMAIN not in {CONTACT_DOMAIN, GUARDIAN_DOMAIN}
 
 
 def test_no_random_fallback_exists_anywhere_in_naming() -> None:
@@ -224,7 +245,7 @@ def test_new_provisioning_does_not_use_the_v1_contact_function() -> None:
     assert callers == set(), sorted(callers)
 
 
-def test_the_guardian_v1_function_is_only_reachable_from_the_console() -> None:
+def test_the_guardian_v1_function_is_not_reachable_from_new_provisioning() -> None:
     root = pathlib.Path(naming_v2.__file__).resolve().parent.parent
     callers = {
         path.relative_to(root).as_posix()
@@ -233,9 +254,14 @@ def test_the_guardian_v1_function_is_only_reachable_from_the_console() -> None:
         and path.name != "naming.py"
     }
 
-    assert callers == {"bootstrap/telegram.py"}, sorted(callers)
+    assert callers == set(), sorted(callers)
 
 
 def test_the_naming_versions_are_named_and_distinct() -> None:
-    assert len({item.value for item in NamingVersion}) == 3
+    assert len({item.value for item in NamingVersion}) == 4
     assert NamingVersion.LEGACY.value != NamingVersion.V2.value
+    assert NamingVersion.V3.value not in {
+        NamingVersion.LEGACY.value,
+        NamingVersion.V2.value,
+        NamingVersion.ADOPTED.value,
+    }

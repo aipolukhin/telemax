@@ -21,6 +21,7 @@ from bridge.telegram.user_session import (
     OwnerMismatchError,
     TelegramUserSession,
     authorize_owner_session,
+    connect_owner_session,
     contact_bot_allowlist,
     qr_ascii,
     user_session_path,
@@ -189,6 +190,29 @@ async def test_a_fresh_qr_login_authorises_and_verifies_the_owner(tmp_path: Path
     assert made[0].qr_logins == 1
     assert shown, "the QR url was rendered to the console"
     assert made[0].disconnected, "the login connection is closed before the runtime opens its own"
+
+
+async def test_first_setup_learns_owner_from_qr_and_keeps_session_live(
+    tmp_path: Path,
+) -> None:
+    factory, made = _factory(authorized=False, qr_outcomes=["ok"], account_id=OWNER)
+
+    connected = await connect_owner_session(
+        api_id=123,
+        api_hash="hash-never-logged",
+        secrets_dir=tmp_path / "secrets",
+        owner_user_id=None,
+        on_qr=lambda _url: None,
+        client_factory=factory,
+        refresh_seconds=0.01,
+    )
+
+    assert connected.owner.account_id == OWNER
+    assert made[0].connected and not made[0].disconnected
+    assert str(user_session_path(tmp_path / "secrets").with_suffix("")) == made[0].session
+
+    await connected.session.close()
+    assert made[0].disconnected
 
 
 async def test_an_expired_qr_is_refreshed_then_scanned(tmp_path: Path) -> None:

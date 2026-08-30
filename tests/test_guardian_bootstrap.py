@@ -22,7 +22,7 @@ import pytest
 from bridge.bootstrap.plan import read_plan
 from bridge.bootstrap.telegram import GuardianUsernameTakenError, ensure_guardian
 from bridge.provisioning.mtproto import MtprotoError
-from bridge.provisioning.naming import guard_username, load_or_create_naming_secret
+from bridge.provisioning.naming_v2 import guardian_bot_username_v3
 from tests.fake_console import FakeUi
 
 OWNER = 100000001
@@ -89,7 +89,7 @@ def plan(tmp_path: Path, monkeypatch: Any) -> Any:
 
 
 def expected_username(plan: Any) -> str:
-    return guard_username(load_or_create_naming_secret(plan.secrets_dir), OWNER)
+    return guardian_bot_username_v3(OWNER)
 
 
 # ------------------------------------------------------------------ first run
@@ -239,12 +239,11 @@ async def test_a_username_telegram_has_not_released_is_not_worked_around(
     assert session.created == []
 
 
-async def test_the_naming_secret_survives_a_second_bootstrap(plan: Any) -> None:
-    first = load_or_create_naming_secret(plan.secrets_dir)
+async def test_a_fresh_guardian_does_not_create_a_load_bearing_secret(plan: Any) -> None:
     session = Session()
     await ensure_guardian(plan, FakeUi(), session)  # type: ignore[arg-type]
 
-    assert load_or_create_naming_secret(plan.secrets_dir) == first
+    assert not (plan.secrets_dir / "naming-secret").exists()
 
 
 # ---------------------------------------------------------------- adoption

@@ -54,10 +54,14 @@ def build_parser() -> argparse.ArgumentParser:
     setup_command.add_argument(
         "--with-session",
         action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    setup_command.add_argument(
+        "--manual-guardian",
+        action="store_true",
         help=(
-            "log into your Telegram account and let it create the guardian bot, "
-            "instead of pasting a token you made by hand. Keeps a full account "
-            "credential on disk; useful for debugging, not needed in production"
+            "recovery path: paste an existing Guardian token instead of scanning "
+            "Telegram QR and creating the bot automatically"
         ),
     )
     setup_command.add_argument(
@@ -102,7 +106,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return setup_cli.run(
             args.config,
             instance=args.instance,
-            use_session=args.with_session,
+            use_session=not args.manual_guardian,
             adopt=args.adopt_guardian,
         )
     if args.command == "validate-config":
