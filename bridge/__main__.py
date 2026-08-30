@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from bridge.cli import cutover as cutover_cli
-from bridge.cli import owner_session, telegram_login, validate
+from bridge.cli import healthcheck, owner_session, telegram_login, validate
 from bridge.cli import run as run_cli
 from bridge.cli import setup as setup_cli
 
@@ -52,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     setup_command.add_argument(
+        "--runtime",
+        choices=("systemd", "docker"),
+        default="systemd",
+        help=argparse.SUPPRESS,
+    )
+    setup_command.add_argument(
         "--with-session",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -75,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     commands.add_parser("run", help="start the service (systemd does this for you)")
+    commands.add_parser("healthcheck", help="check the local supervisor heartbeat")
     commands.add_parser("validate-config", help="check the configuration and print what it means")
     commands.add_parser(
         "telegram-login",
@@ -108,6 +115,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             instance=args.instance,
             use_session=not args.manual_guardian,
             adopt=args.adopt_guardian,
+            deployment=args.runtime,
         )
     if args.command == "validate-config":
         return validate.run(args.config)
@@ -119,6 +127,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return owner_session.run(args.config)
     if args.command == "run":
         return run_cli.run(args.config)
+    if args.command == "healthcheck":
+        return healthcheck.run(args.config)
 
     raise AssertionError(f"unhandled command: {args.command}")  # pragma: no cover
 

@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .venv/
+.tools/
 .env
 # Per-install state created by `telemax setup`. The documented shape lives in
 # config.example.yaml; the real file contains an owner id and host paths.

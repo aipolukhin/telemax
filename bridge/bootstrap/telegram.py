@@ -23,7 +23,6 @@ from functools import partial
 from typing import Any
 
 from bridge.config.writer import set_env_value
-from bridge.phone import normalize as normalize_phone
 from bridge.provisioning import mtproto
 from bridge.provisioning.naming import GUARD_DISPLAY_NAME
 from bridge.provisioning.naming_v2 import guardian_bot_username_v3
@@ -48,13 +47,16 @@ from bridge.telegram.user_session import (
 
 from .intent import GuardianIntent
 from .plan import Plan
-from .ui import Ui, valid_api_id, valid_nonempty, valid_phone
+from .ui import Ui, valid_api_id, valid_nonempty
 
 logger = logging.getLogger(__name__)
 
 GUARDIAN_NAME = GUARD_DISPLAY_NAME
 
-API_HELP = "api_id и api_hash — на my.telegram.org → API development tools."
+API_HELP = (
+    "API ID и API Hash идентифицируют ваше Telegram-приложение и нужны Telethon "
+    "до входа по QR. Возьмите их на my.telegram.org → API development tools."
+)
 
 
 class BotFatherLimitError(mtproto.MtprotoError):
@@ -126,14 +128,9 @@ async def _remembered(
     validator = valid_nonempty
     if key == plan.api_id_env:
         validator = valid_api_id
-    elif key == plan.phone_env:
-        validator = valid_phone
 
     ask = ui.secret if hidden else ui.ask
     value = await ask(question, validate=validator)
-    if key == plan.phone_env:
-        # Store the form Telegram wants, not the form an address book shows.
-        value = normalize_phone(value) or value
     set_env_value(plan.env_path, key, value)
     if journal is not None:
         journal.append(key)

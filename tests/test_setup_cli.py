@@ -12,6 +12,7 @@ import asyncio
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -339,6 +340,56 @@ def test_the_service_is_installed_before_the_handoff(sandbox: Any) -> None:
     assert delivered == ["saved"]
     order = ui.transcript.index("Сервис Telemax запущен")
     assert order < ui.transcript.index("Продолжите в Telegram")
+
+
+def test_docker_setup_prepares_state_without_touching_systemd(sandbox: Any) -> None:
+    plan, manager, delivered = sandbox
+    ui = FakeUi(answers=ANSWERS)
+
+    code = asyncio.run(
+        flow.bootstrap(plan, ui, manager=manager, install_runtime=False)
+    )
+
+    assert code == 0
+    assert manager.installed == []
+    assert delivered == ["saved"]
+    assert "Конфигурация готова" in ui.transcript
+    assert "Сервис Telemax запущен" not in ui.transcript
+
+
+def test_docker_manual_guardian_also_avoids_systemd(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    plan = read_plan(tmp_path / "config.yaml")
+    manager = FakeServiceManager(installed=[])
+    ui = FakeUi(answers=[])
+
+    async def fake_plan(*_: Any, **__: Any) -> tuple[None, None]:
+        return None, None
+
+    async def fake_adopt(*_: Any, **__: Any) -> Any:
+        return SimpleNamespace(
+            owner_user_id=100000001,
+            username="telemax_guard_bot",
+            token=GUARDIAN_TOKEN,
+        )
+
+    monkeypatch.setattr(flow, "_guardian_plan", fake_plan)
+    monkeypatch.setattr(flow, "adopt_guardian", fake_adopt)
+
+    code = asyncio.run(
+        flow.bootstrap_managed(
+            plan,
+            ui,
+            manager=manager,
+            adopt=True,
+            install_runtime=False,
+        )
+    )
+
+    assert code == 0
+    assert manager.installed == []
+    assert "Конфигурация готова" in ui.transcript
 
 
 def test_ctrl_c_leaves_nothing_behind(sandbox: Any) -> None:

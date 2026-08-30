@@ -20,5 +20,12 @@ def run(
     instance: str | None = None,
     use_session: bool = True,
     adopt: bool = False,
+    deployment: str = "systemd",
 ) -> int:
-    return run_bootstrap(path, instance=instance, use_session=use_session, adopt=adopt)
+    return run_bootstrap(
+        path,
+        instance=instance,
+        use_session=use_session,
+        adopt=adopt,
+        deployment=deployment,
+    )

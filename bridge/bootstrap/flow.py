@@ -1,10 +1,10 @@
 """`python -m bridge setup` — from an empty machine to a chat, and then stop.
 
-The console asks for exactly three things it cannot find out: an api_id, an
-api_hash and a phone. Everything else it works out or writes itself — the
-owner's Telegram id comes from the session it opens, the guardian bot's username
-is derived from that id, the config and the service unit are written, and the
-last thing it does is hand the owner a link and get out of the way.
+The console asks for exactly two things it cannot derive: the Telegram
+application's api_id and api_hash. They initialise the MTProto client; the QR
+then authorises the owner's account in that client. Everything else is worked
+out or written automatically — including the owner's Telegram id, Guardian,
+config and service unit — before setup hands the owner to Telegram and exits.
 
 Two things are deliberately *not* here.
 
@@ -141,10 +141,19 @@ async def _deliver_link(
     return result
 
 
-def _final_screen(ui: Ui, account: TelegramAccount, result: handoff_module.Handoff) -> None:
+def _final_screen(
+    ui: Ui,
+    account: TelegramAccount,
+    result: handoff_module.Handoff,
+    *,
+    service_started: bool,
+) -> None:
     ui.panel("Продолжите в Telegram")
     ui.ok(f"Бот-страж: @{result.bot_username}")
-    ui.ok("Сервис Telemax запущен")
+    if service_started:
+        ui.ok("Сервис Telemax запущен")
+    else:
+        ui.ok("Конфигурация готова")
 
     if result.delivery is handoff_module.Delivery.BOT:
         ui.ok("Приглашение отправлено в чат с ботом")
@@ -155,7 +164,10 @@ def _final_screen(ui: Ui, account: TelegramAccount, result: handoff_module.Hando
         ui.plain(result.link)
 
     ui.plain()
-    ui.plain("Откройте Telegram и завершите настройку в боте.")
+    if service_started:
+        ui.plain("Откройте Telegram и завершите настройку в боте.")
+    else:
+        ui.plain("Docker сейчас запустит Guardian; продолжите настройку в его чате.")
     ui.plain()
     ui.note("Можно закрыть терминал.")
 
@@ -184,6 +196,7 @@ async def bootstrap_managed(
     manager: ServiceManager,
     instance: str | None = None,
     adopt: bool = False,
+    install_runtime: bool = True,
 ) -> int:
     """The default: a token, a tap, and no Telegram account credential anywhere.
 
@@ -242,15 +255,19 @@ async def bootstrap_managed(
             ),
         )
 
-        install_service(plan, ui, manager=manager, instance=instance)
-        undo.append(manager.uninstall)
+        if install_runtime:
+            install_service(plan, ui, manager=manager, instance=instance)
+            undo.append(manager.uninstall)
         undo.clear()
 
         ui.panel("Продолжите в Telegram")
         ui.ok(f"Бот-страж: @{guardian.username}")
-        ui.ok("Сервис Telemax запущен")
+        ui.ok("Сервис Telemax запущен" if install_runtime else "Конфигурация готова")
         ui.plain()
-        ui.plain("Вернитесь в чат с ботом — он продолжит настройку сам.")
+        if install_runtime:
+            ui.plain("Вернитесь в чат с ботом — он продолжит настройку сам.")
+        else:
+            ui.plain("Docker сейчас запустит Guardian; продолжите настройку в его чате.")
         ui.plain()
         ui.note("Можно закрыть терминал.")
         return 0
@@ -275,12 +292,17 @@ async def bootstrap_managed(
 
 
 async def bootstrap(
-    plan: Plan, ui: Ui, *, manager: ServiceManager, instance: str | None = None
+    plan: Plan,
+    ui: Ui,
+    *,
+    manager: ServiceManager,
+    instance: str | None = None,
+    install_runtime: bool = True,
 ) -> int:
     undo: list[Callable[[], None]] = []
     # What this run typed into `.env`, so a cancellation can take it back out.
     # The Telegram *session* is never in here: it cost a code from the owner's
-    # phone, and throwing it away would make a re-run harder, not cleaner.
+        # QR scan, and throwing it away would make a re-run harder, not cleaner.
     written: list[str] = []
     guardian_exists = False
     session: Any | None = None
@@ -294,7 +316,7 @@ async def bootstrap(
         # live runtime. Stop it before QR/session work and restore it on any
         # failed setup; a successful install starts the replacement itself.
         is_active = getattr(manager, "is_active", None)
-        if callable(is_active) and is_active():
+        if install_runtime and callable(is_active) and is_active():
             manager.stop()
             restore_previous_service = True
 
@@ -339,14 +361,15 @@ async def bootstrap(
         else:
             ui.warn("Не смог открыть чат автоматически — покажу ссылку в конце.")
 
-        install_service(plan, ui, manager=manager, instance=instance)
-        restore_previous_service = False
-        undo.append(manager.uninstall)
+        if install_runtime:
+            install_service(plan, ui, manager=manager, instance=instance)
+            restore_previous_service = False
+            undo.append(manager.uninstall)
 
         result = await _deliver_link(plan, ui, account)
         undo.clear()
 
-        _final_screen(ui, account, result)
+        _final_screen(ui, account, result, service_started=install_runtime)
         return 0
     except SetupCancelled:
         _roll_back(undo)
@@ -425,6 +448,7 @@ def run(
     instance: str | None = None,
     use_session: bool = True,
     adopt: bool = False,
+    deployment: str = "systemd",
 ) -> int:
     """Install through one QR-authenticated Telegram owner session.
 
@@ -439,14 +463,31 @@ def run(
     _load_existing_env(plan)
     console = ui or Ui()
     manager = ServiceManager(instance=instance)
+    if deployment not in {"systemd", "docker"}:
+        raise ValueError(f"unknown deployment runtime: {deployment}")
+    install_runtime = deployment == "systemd"
     if not use_session or adopt:
         return _run(
             bootstrap_managed(
-                plan, console, manager=manager, instance=instance, adopt=True
+                plan,
+                console,
+                manager=manager,
+                instance=instance,
+                adopt=True,
+                install_runtime=install_runtime,
             ),
             console,
         )
-    return _run(bootstrap(plan, console, manager=manager, instance=instance), console)
+    return _run(
+        bootstrap(
+            plan,
+            console,
+            manager=manager,
+            instance=instance,
+            install_runtime=install_runtime,
+        ),
+        console,
+    )
 
 
 def _run(flow: Coroutine[Any, Any, int], console: Ui) -> int:

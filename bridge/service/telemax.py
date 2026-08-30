@@ -62,6 +62,7 @@ from bridge.provisioning.business import use_state_dir as use_business_state_dir
 from bridge.service.incidents import build_incidents_router
 from bridge.telegram import OwnerOnlyMiddleware
 
+from .heartbeat import RuntimeHeartbeat
 from .lock import ProcessLock
 from .runtime import BridgeService
 
@@ -260,7 +261,14 @@ class TelemaxRuntime:
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError):
                 loop.add_signal_handler(sig, stop.set)
-        await stop.wait()
+        heartbeat = RuntimeHeartbeat.for_data_dir(self._loaded.app.paths.data_dir)
+        pulse = asyncio.create_task(heartbeat.run(stop), name="runtime-heartbeat")
+        try:
+            await stop.wait()
+        finally:
+            stop.set()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pulse
         logger.info("shutting down")
 
     # ----------------------------------------------------------- worker control

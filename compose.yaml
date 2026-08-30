@@ -1,0 +1,48 @@
+x-telemax-common: &telemax-common
+  image: ${TELEMAX_IMAGE:-telemax:local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+  user: "${TELEMAX_UID:?run docker.sh setup}:${TELEMAX_GID:?run docker.sh setup}"
+  environment:
+    HOME: /state/home
+    BRIDGE_CONFIG: /state/config.yaml
+  volumes:
+    - type: bind
+      source: ${TELEMAX_STATE_DIR:?run docker.sh setup}
+      target: /state
+  read_only: true
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,noexec,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  init: true
+  stop_grace_period: 70s
+
+services:
+  telemax:
+    <<: *telemax-common
+    restart: unless-stopped
+    command: ["--config", "/state/config.yaml", "run"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/app/.venv/bin/telemax",
+          "--config",
+          "/state/config.yaml",
+          "healthcheck",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  setup:
+    <<: *telemax-common
+    profiles: ["setup"]
+    stdin_open: true
+    tty: true
+    command: ["--config", "/state/config.yaml", "setup", "--runtime", "docker"]
