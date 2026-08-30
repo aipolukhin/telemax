@@ -29,3 +29,13 @@ and each project remains governed by its own license.
 The dependency list is generated independently by package installers and may
 also include transitive projects. Consult the installed distributions for their
 complete license texts and notices.
+
+## Build and deployment tooling
+
+These are not imported into the Telemax runtime, but the supported installers
+use them:
+
+| Tool/image | Used for | License |
+|---|---|---|
+| [Astral uv](https://github.com/astral-sh/uv) `0.12.7` | frozen host dependency sync and Docker build | Apache-2.0 OR MIT |
+| [Python official image](https://hub.docker.com/_/python) `3.12-slim-bookworm` | optional Docker runtime base | PSF-2.0 plus bundled component licenses |

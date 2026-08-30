@@ -275,9 +275,8 @@ reactions:
 
 provisioning:
   # The guardian bot is the whole administrative surface: MAX login, dialog
-  # picking, status and restart all happen there. `managed` keeps no Telegram
-  # account credential on disk — contact bots come from Managed Bots, and the
-  # guardian only needs Bot Management Mode, enabled once in @BotFather.
+  # picking, status and restart all happen there. The owner session created by
+  # setup is preferred for contact bots; Managed Bots remains the fallback.
   mode: managed
   unknown_chat_policy: ask
   guardian_bot_token_env: {guardian_token_env}

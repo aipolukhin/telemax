@@ -199,17 +199,15 @@ provisioning:
   # off      — bridges come only from this file
   # guardian — a new MAX contact triggers a question in the guardian bot, you
   #            create the bot in @BotFather and paste the token back
-  # managed  — Telegram's own Managed Bots: /dialogs in the guardian chat shows
-  #            Telegram's confirmation dialog with the name and username filled
-  #            in, and the token arrives at the guardian by itself. Needs Bot
-  #            Management Mode on the guardian, enabled once in @BotFather's mini
-  #            app, and **no Telegram account credentials at all**.
+  # managed  — the normal setup mode. The single QR-authenticated owner session
+  #            creates contact bots through @BotFather; Telegram Managed Bots
+  #            remains the fallback if that session is temporarily unavailable.
   # auto_mtproto — the same Managed Bots creation, plus a full account session on
   #            disk for two things Bot API cannot do: count every bot the account
   #            owns (not just this install's) and press /start on a new bot.
   #            Useful for debugging; not needed in production.
   #
-  # `setup` writes managed.
+  # `setup` writes managed and keeps one owner session for runtime intake.
   mode: managed
   unknown_chat_policy: ask
   guardian_bot_token_env: TELEMAX_GUARDIAN_TOKEN

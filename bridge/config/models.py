@@ -142,9 +142,9 @@ class ReactionStyle(StrEnum):
 class ProvisioningMode(StrEnum):
     OFF = "off"
     GUARDIAN = "guardian"
-    #: Managed Bots and nothing else: no account credential on disk. This is the
-    #: production shape — `auto_mtproto` differs only by keeping a user session
-    #: for the counts and the `/start`, which is useful while debugging.
+    #: Managed Bots remain available as a fallback. Normal production also has
+    #: the canonical owner intake session and borrows it for @BotFather; the enum
+    #: says how bot inventory falls back, not whether that session exists.
     MANAGED = "managed"
     AUTO_MTPROTO = "auto_mtproto"
 
@@ -360,10 +360,10 @@ class ProvisioningConfig(Strict):
     # Tokens handed out at runtime land here, 0600, one `NAME=value` per line.
     # The database only ever stores the variable name.
     secrets_file_name: str = "bots.env"
-    # Creating a bot is the one thing Bot API cannot do, so `auto_mtproto` needs
-    # the owner's own Telegram account: api_id and api_hash from my.telegram.org,
-    # and the phone that account is registered to. All three come from the
-    # environment — never from this file.
+    # The canonical Telegram owner session needs application credentials from
+    # my.telegram.org. They initialise Telethon both for QR setup and runtime.
+    # The phone variable belongs only to the legacy SMS/auto_mtproto recovery
+    # contour; normal setup never asks for it. Values stay in the environment.
     mtproto_api_id_env: str = "TELEMAX_API_ID"
     mtproto_api_hash_env: str = "TELEMAX_API_HASH"
     mtproto_phone_env: str = "TELEMAX_PHONE"
