@@ -23,7 +23,12 @@ from bridge.max_client import AttachmentKind, MaxAttachment
 from .http import DownloadFailedError, HttpFetcher, WrongContentError
 from .names import display_name, extension_for
 from .sniff import ContentKind
-from .sources import EXPECTED_CONTENT, MaxMediaSources, sticker_is_animated
+from .sources import (
+    EXPECTED_CONTENT,
+    MaxMediaSources,
+    SourceResolutionError,
+    sticker_is_animated,
+)
 from .stickers import to_telegram_sticker
 from .store import LocalFile, MediaTooLargeError, TempFiles
 
@@ -55,7 +60,16 @@ DEFAULT_EXTENSION = {
 
 
 class UnavailableMediaError(Exception):
-    """The attachment could not be turned into a file."""
+    """The attachment could not be turned into a file.
+
+    ``code`` is deliberately small and contains no URL, token or message text.
+    It is safe to persist in the durable outbox and is the part operators need
+    to distinguish a missing source from a refused download or wrong bytes.
+    """
+
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = code
+        super().__init__(detail)
 
 
 class MediaPipeline:
@@ -93,10 +107,19 @@ class MediaPipeline:
         if attachment.size and attachment.size > self._limit_bytes:
             raise MediaTooLargeError(self._limit_bytes, attachment.size)
 
-        url = await self._sources.resolve(attachment, chat_id=chat_id, message_id=message_id)
+        try:
+            url = await self._sources.resolve(
+                attachment, chat_id=chat_id, message_id=message_id
+            )
+        except SourceResolutionError as error:
+            raise UnavailableMediaError(
+                error.code,
+                f"no download URL for a {attachment.kind.value} attachment",
+            ) from error
         if not url:
             raise UnavailableMediaError(
-                f"no download URL for a {attachment.kind.value} attachment"
+                "source_url_missing",
+                f"no download URL for a {attachment.kind.value} attachment",
             )
 
         expected: ContentKind | None = EXPECTED_CONTENT.get(attachment.kind)
@@ -121,10 +144,17 @@ class MediaPipeline:
             except WrongContentError as error:
                 # Almost always an expired token: MAX answers 200 with a page.
                 raise UnavailableMediaError(
+                    "wrong_content",
                     f"the link for this {attachment.kind.value} no longer serves it ({error})"
                 ) from error
             except DownloadFailedError as error:
-                raise UnavailableMediaError(str(error)) from error
+                # aiohttp's exception text can contain the signed URL. The
+                # durable queue keeps this message, so persist only a bounded,
+                # secret-free reason and retain the exception as the cause for
+                # local debugging.
+                raise UnavailableMediaError(
+                    "download_failed", "media download failed"
+                ) from error
 
             name = display_name(
                 hint=attachment.file_name,
@@ -164,7 +194,17 @@ class MediaPipeline:
                     url, path, limit_bytes=self._limit_bytes, expected=expected
                 )
             except (WrongContentError, DownloadFailedError) as error:
-                raise UnavailableMediaError(str(error)) from error
+                code = (
+                    "wrong_content"
+                    if isinstance(error, WrongContentError)
+                    else "download_failed"
+                )
+                detail = (
+                    str(error)
+                    if isinstance(error, WrongContentError)
+                    else "media download failed"
+                )
+                raise UnavailableMediaError(code, detail) from error
 
             yield LocalFile(
                 path=path,

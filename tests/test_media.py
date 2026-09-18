@@ -36,7 +36,8 @@ from bridge.media.store import PREFIX
 JPEG = b"\xff\xd8\xff\xe0" + b"0" * 64
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
 OGG = b"OggS" + b"0" * 64
-MP4 = b"\x00\x00\x00\x20ftypisom" + b"0" * 64
+MP4 = b"\x00\x00\x00\x20ftypavc1" + b"0" * 64
+GENERIC_MP4 = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00isommp42" + b"0" * 64
 M4A = b"\x00\x00\x00\x20ftypM4A " + b"0" * 64
 PDF = b"%PDF-1.7" + b"0" * 64
 HTML = b"<!DOCTYPE html><html><body>token expired</body></html>"
@@ -106,6 +107,13 @@ def test_a_document_may_be_anything_but_a_photo_may_not() -> None:
     assert is_acceptable(ContentKind.DOCUMENT, ContentKind.IMAGE)
     assert is_acceptable(ContentKind.DOCUMENT, ContentKind.AUDIO)
     assert not is_acceptable(ContentKind.IMAGE, ContentKind.VIDEO)
+
+
+def test_a_generic_iso_bmff_brand_is_not_assumed_to_be_video() -> None:
+    """MAX serves music as AAC in an mp42 container and calls it octet-stream."""
+    assert detect_kind(GENERIC_MP4) is ContentKind.UNKNOWN
+    assert classify("application/octet-stream", GENERIC_MP4) is ContentKind.UNKNOWN
+    assert is_acceptable(ContentKind.AUDIO, classify("application/octet-stream", GENERIC_MP4))
 
 
 # ------------------------------------------------------------------- URL choice
@@ -339,6 +347,39 @@ async def test_a_voice_message_goes_through_opcode_301(tmp_path: Path) -> None:
     ) as local:
         assert local.display_name == "voice.ogg"
     assert protocol.calls == ["audio"]
+
+
+async def test_max_music_in_a_generic_mp42_container_is_accepted(tmp_path: Path) -> None:
+    """Regression for a real MAX track rejected as `expected audio, got video`."""
+    protocol = FakeProtocol(file={"url": "https://fd.oneme.ru/getfile"})
+    session = FakeSession(body=GENERIC_MP4, headers={"Content-Type": "application/octet-stream"})
+    attachment = MaxAttachment(
+        kind=AttachmentKind.MUSIC,
+        file_name="track.m4a",
+        raw={"fileId": 4_935_144_295},
+    )
+
+    async with pipeline_for(tmp_path, protocol, session).fetch_from_max(
+        attachment, chat_id=7, message_id=8
+    ) as local:
+        assert local.display_name == "track.m4a"
+        assert local.size == len(GENERIC_MP4)
+    assert protocol.calls == ["file"]
+
+
+async def test_unavailable_media_has_a_safe_durable_reason(tmp_path: Path) -> None:
+    protocol = FakeProtocol(file={"url": "https://fd.oneme.ru/signed?token=secret"})
+    session = FakeSession(body=HTML, headers={"Content-Type": "text/html"})
+    attachment = MaxAttachment(kind=AttachmentKind.MUSIC, raw={"fileId": 9})
+
+    with pytest.raises(UnavailableMediaError) as caught:
+        async with pipeline_for(tmp_path, protocol, session).fetch_from_max(
+            attachment, chat_id=7, message_id=8
+        ):
+            pass
+
+    assert caught.value.code == "wrong_content"
+    assert "secret" not in str(caught.value)
 
 
 async def test_a_file_keeps_its_own_name_sanitised(tmp_path: Path) -> None:

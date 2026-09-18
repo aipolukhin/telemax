@@ -22,7 +22,6 @@ from bridge.routing.delivery import (
     KIND_OWNER_ECHO_BIND,
     DeferDelivery,
     DeliveryPipe,
-    UnconfirmedDeliveryError,
 )
 from bridge.routing.echo import media_echo_fingerprint, text_echo_fingerprint
 from bridge.routing.owner_echo import GIVE_UP_MS, echo_source_key, resolve_echo
@@ -300,16 +299,22 @@ async def test_giving_up_says_nothing_about_the_message_itself(db: Database) -> 
     assert "t1:" in recorded, "hashes and ids only"
 
 
-async def test_an_echo_matching_nothing_at_all_needs_attention(db: Database) -> None:
-    messages = MessageMapRepository(db)
-    await _sent(messages, text="единственное", max_message_id=1)
+async def test_an_echo_matching_nothing_is_not_a_false_delivery_ambiguity(
+    db: Database,
+) -> None:
+    messages, state = MessageMapRepository(db), BridgeStateRepository(db)
+    link = await _sent(messages, text="единственное", max_message_id=1)
 
-    with pytest.raises(UnconfirmedDeliveryError):
-        await resolve_echo(
-            messages=messages,
-            state=BridgeStateRepository(db),
-            payload=_echo(owner_message_id=900, text="чужое", first_seen_ms=0),
-        )
+    await resolve_echo(
+        messages=messages,
+        state=state,
+        payload=_echo(owner_message_id=900, text="чужое", first_seen_ms=0),
+    )
+
+    abandoned = await messages.by_id(link)
+    assert abandoned is not None and abandoned.echo_fingerprint is None
+    assert await messages.by_owner_account_message(ACCOUNT, 900) is None
+    assert "owner echo binding" in str((await state.snapshot(BRIDGE) or {}).get("last_error"))
 
 
 # ------------------------------------------------------------ the two orders
@@ -616,8 +621,12 @@ async def test_an_unbindable_echo_leaves_the_delivery_done(db: Database) -> None
         payload=payload,
     )
 
-    assert settled.ambiguous is True, "the owner is told, once"
-    assert await outbox.needing_attention(BRIDGE), "through the existing list"
+    assert settled.delivered is True and settled.ambiguous is False
+    assert await outbox.needing_attention(BRIDGE) == []
+    binding = await outbox.by_source_key(echo_source_key(ACCOUNT, 900))
+    assert binding is not None and binding.state is OutboxState.DONE
+    state = await BridgeStateRepository(db).snapshot(BRIDGE) or {}
+    assert "owner echo binding" in str(state.get("last_error")), "diagnostic is retained"
     carried = await outbox.by_source_key("max:555:1")
     assert carried is not None and carried.state is OutboxState.DONE
     assert json.loads(carried.payload_json) == {}, "delivered, and still delivered"

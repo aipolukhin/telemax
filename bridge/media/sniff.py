@@ -43,9 +43,17 @@ def detect_kind(head: bytes) -> ContentKind:
         return ContentKind.IMAGE
 
     if head[4:8] == b"ftyp":
-        # ISO-BMFF covers both mp4 video and m4a audio; the brand tells them apart.
+        # ISO-BMFF is a container, not a promise that a video track exists.
+        # MAX music has been observed as AAC in an `mp42` container with no
+        # video track and `application/octet-stream`; treating every brand that
+        # is not literally M4A/M4B as video rejects a perfectly valid track.
+        # Only brands that name one side unambiguously are classified here.
         brand = head[8:12]
-        return ContentKind.AUDIO if brand in (b"M4A ", b"M4B ") else ContentKind.VIDEO
+        if brand in (b"M4A ", b"M4B ", b"F4A ", b"f4a "):
+            return ContentKind.AUDIO
+        if brand in (b"M4V ", b"avc1", b"hvc1", b"hev1"):
+            return ContentKind.VIDEO
+        return ContentKind.UNKNOWN
     if head.startswith(b"\x1a\x45\xdf\xa3"):  # Matroska / WebM
         return ContentKind.VIDEO
 
@@ -82,6 +90,14 @@ def classify(content_type: str | None, head: bytes) -> ContentKind:
     detected = detect_kind(head)
     if detected is not ContentKind.UNKNOWN:
         return detected
+
+    # A generic ISO-BMFF brand (`isom`, `mp41`, `mp42`, `qt  `) cannot tell us
+    # whether the file contains audio, video, or both. Do not let an equally
+    # generic `application/octet-stream` turn that uncertainty into DOCUMENT:
+    # the caller's expected attachment kind is the stronger evidence and both
+    # audio and video pipelines explicitly accept UNKNOWN.
+    if head[4:8] == b"ftyp":
+        return ContentKind.UNKNOWN
 
     normalized = (content_type or "").split(";", 1)[0].strip().lower()
     if normalized.startswith("image/"):

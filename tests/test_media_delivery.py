@@ -18,7 +18,7 @@ import pytest
 
 from bridge.max_client import AttachmentKind, MaxAttachment, normalize_message
 from bridge.max_client.events import normalize_attachment
-from bridge.media import MaxMediaSources, MediaPipeline, TempFiles
+from bridge.media import MaxMediaSources, MediaPipeline, TempFiles, UnavailableMediaError
 from bridge.media.delivery import (
     CAPTION_LIMIT,
     UNKNOWN_NOTICE,
@@ -29,7 +29,7 @@ from bridge.media.delivery import (
     call_text,
     ms_to_seconds,
 )
-from tests.test_media import JPEG, MP4, OGG, PDF, FakeProtocol, FakeSession, fetcher_for
+from tests.test_media import HTML, JPEG, MP4, OGG, PDF, FakeProtocol, FakeSession, fetcher_for
 
 
 class MixedSession(FakeSession):
@@ -290,18 +290,19 @@ async def test_a_long_caption_follows_as_its_own_message(tmp_path: Path) -> None
     assert sender.texts == [long_text], "the text must not be cut in half"
 
 
-async def test_an_attachment_that_cannot_be_fetched_says_so(tmp_path: Path) -> None:
-    """Silence would leave the owner thinking nothing was sent."""
+async def test_a_resolver_failure_retries_instead_of_becoming_done(tmp_path: Path) -> None:
     sender = FakeSender()
     protocol = FakeProtocol(file={})
     attachment = MaxAttachment(kind=AttachmentKind.FILE, raw={"fileId": 7})
 
-    await delivery_for(tmp_path, protocol, PDF, sender).deliver(
-        message_with(attachment), bot_id=BOT, chat_id=CHAT
-    )
+    with pytest.raises(UnavailableMediaError) as caught:
+        await delivery_for(tmp_path, protocol, PDF, sender).deliver(
+            message_with(attachment), bot_id=BOT, chat_id=CHAT
+        )
 
+    assert caught.value.code == "source_url_missing"
     assert sender.methods == []
-    assert sender.texts and "не удалось скачать" in sender.texts[0]
+    assert sender.texts == []
 
 
 async def test_an_oversized_attachment_names_the_limit(tmp_path: Path) -> None:
@@ -685,12 +686,14 @@ async def test_the_hook_fires_once_after_everything_is_downloaded(
     assert sender.methods == ["album"]
 
 
-async def test_the_hook_is_not_fired_when_nothing_can_be_sent(tmp_path: Path) -> None:
+async def test_unavailable_media_retries_without_a_placeholder_or_send_mark(
+    tmp_path: Path,
+) -> None:
     """A message whose only attachment cannot be fetched never reaches Telegram.
 
-    It still produces a placeholder line, which *is* a remote call — so the hook
-    fires for that. What must not happen is the hook firing before the download
-    was even attempted.
+    A source failure happens before Telegram is called, so the durable job may
+    retry with a fresh MAX URL. A placeholder would turn that retryable failure
+    into DONE and its owner-side echo into a false ambiguity.
     """
     order: list[str] = []
 
@@ -703,15 +706,51 @@ async def test_the_hook_is_not_fired_when_nothing_can_be_sent(tmp_path: Path) ->
         order.append("hook")
 
     sender = Ordered()
-    # No `baseUrl`: nothing to resolve, so the pipeline gives up before any send.
-    photo = MaxAttachment(kind=AttachmentKind.PHOTO, raw={})
+    # The attachment has an id, but MAX returned no URL. This can recover on a
+    # fresh resolution and therefore must stay in the outbox.
+    photo = MaxAttachment(kind=AttachmentKind.FILE, raw={"fileId": 7})
 
-    await delivery_for(tmp_path, FakeProtocol(), JPEG, sender).deliver(
-        message_with(photo), bot_id=BOT, chat_id=CHAT, on_sending=on_sending
+    with pytest.raises(UnavailableMediaError) as caught:
+        await delivery_for(tmp_path, FakeProtocol(file={}), JPEG, sender).deliver(
+            message_with(photo), bot_id=BOT, chat_id=CHAT, on_sending=on_sending
+        )
+
+    assert caught.value.code == "source_url_missing"
+    assert order == []
+    assert sender.texts == []
+
+
+async def test_an_album_source_failure_happens_before_any_telegram_call(
+    tmp_path: Path,
+) -> None:
+    sender = FakeSender()
+    from tests.test_media import FakeResponse
+
+    class AlbumSession(FakeSession):
+        def get(self, url: str) -> Any:
+            self.requested.append(url)
+            if url.endswith("bad"):
+                return FakeResponse(HTML, {"Content-Type": "text/html"})
+            return FakeResponse(JPEG, {"Content-Type": "image/jpeg"})
+
+    photos = [
+        MaxAttachment(kind=AttachmentKind.PHOTO, raw={"baseUrl": "https://cdn/one"}),
+        MaxAttachment(kind=AttachmentKind.PHOTO, raw={"baseUrl": "https://cdn/bad"}),
+    ]
+    pipeline = MediaPipeline(
+        sources=MaxMediaSources(FakeProtocol()),
+        temp_files=TempFiles(tmp_path / "tmp"),
+        fetcher=fetcher_for(AlbumSession()),
+        max_file_size_mb=1,
     )
 
-    assert order[:2] == ["hook", "send"], "the hook precedes the call it announces"
-    assert order.count("hook") == 1
+    with pytest.raises(UnavailableMediaError):
+        await MaxMediaDelivery(pipeline=pipeline, sender=sender).deliver(
+            message_with(*photos), bot_id=BOT, chat_id=CHAT
+        )
+
+    assert sender.calls == []
+    assert sender.texts == []
 
 
 async def test_without_the_hook_nothing_changes(tmp_path: Path) -> None:

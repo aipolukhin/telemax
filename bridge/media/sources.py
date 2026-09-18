@@ -25,6 +25,14 @@ from .sniff import ContentKind
 logger = logging.getLogger(__name__)
 
 
+class SourceResolutionError(Exception):
+    """A safe, bounded reason why a MAX attachment has no download URL."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
 class MediaProtocol(Protocol):
     """The MAX calls this module needs. Implemented by `MaxClient`."""
 
@@ -212,7 +220,10 @@ class MaxMediaSources:
         expected = EXPECTED_CONTENT.get(attachment.kind, ContentKind.DOCUMENT)
 
         if attachment.kind is AttachmentKind.PHOTO:
-            return photo_url(attachment)
+            url = photo_url(attachment)
+            if url:
+                return url
+            raise SourceResolutionError("source_missing")
 
         if attachment.kind is AttachmentKind.STICKER:
             # A sticker carries its own address. Unlike every kind below it
@@ -220,20 +231,26 @@ class MaxMediaSources:
             # public catalogue, and `url` is already that picture. `lottieUrl`
             # sits next to it for the animated ones and is deliberately not used
             # — see `sticker_url` for what it would take.
-            return sticker_url(attachment)
+            url = sticker_url(attachment)
+            if url:
+                return url
+            raise SourceResolutionError("source_missing")
 
         try:
             if attachment.kind in (AttachmentKind.VIDEO, AttachmentKind.VIDEO_NOTE):
                 video_id = _first_int(raw, "videoId", "video_id")
                 if video_id is None:
-                    return None
+                    raise SourceResolutionError("source_missing")
                 answer = await self._protocol.video_sources(chat_id, message_id, video_id)
-                return pick_url(answer, ContentKind.VIDEO)
+                url = pick_url(answer, ContentKind.VIDEO)
+                if url:
+                    return url
+                raise SourceResolutionError("source_url_missing")
 
             if attachment.kind is AttachmentKind.VOICE:
                 audio_id = _first_int(raw, "audioId", "audio_id")
                 if audio_id is None:
-                    return None
+                    raise SourceResolutionError("source_missing")
                 token = raw.get("token")
                 answer = await self._protocol.audio_sources(
                     chat_id, message_id, audio_id, str(token) if token else None
@@ -246,14 +263,22 @@ class MaxMediaSources:
                 file_id = _first_int(raw, "fileId", "file_id")
                 if file_id is not None:
                     answer = await self._protocol.file_source(chat_id, message_id, file_id)
-                    return pick_url(answer, ContentKind.AUDIO)
-                return None
+                    url = pick_url(answer, ContentKind.AUDIO)
+                    if url:
+                        return url
+                    raise SourceResolutionError("source_url_missing")
+                raise SourceResolutionError("source_url_missing")
 
             file_id = _first_int(raw, "fileId", "file_id")
             if file_id is None:
-                return None
+                raise SourceResolutionError("source_missing")
             answer = await self._protocol.file_source(chat_id, message_id, file_id)
-            return pick_url(answer, expected)
+            url = pick_url(answer, expected)
+            if url:
+                return url
+            raise SourceResolutionError("source_url_missing")
+        except SourceResolutionError:
+            raise
         except Exception:
             logger.warning(
                 "could not resolve a %s attachment in message %s",
@@ -261,4 +286,4 @@ class MaxMediaSources:
                 message_id,
                 exc_info=True,
             )
-            return None
+            raise SourceResolutionError("source_lookup_failed") from None

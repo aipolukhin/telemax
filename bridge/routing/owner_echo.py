@@ -137,10 +137,17 @@ async def resolve_echo(*, messages: Any, state: Any, payload: dict[str, Any]) ->
             following.id, account_id=account_id, owner_message_id=owner_message_id
         )
         return None
-    raise UnconfirmedDeliveryError(
-        _diagnostic(bridge_name, expected=None, observed=observed, head_id=head.id)
-        + " — no unbound message matches this echo"
+    # The only remote effect already happened in the MAX→Telegram delivery;
+    # this job merely enriches its mapping. Once the stale head has been
+    # retired, an echo matching no remaining row is a bot-side representation
+    # (for example a permanent failure notice), not an unconfirmed send. Making
+    # the idempotent binding job AMBIGUOUS creates a false delivery incident and
+    # gives the owner nothing actionable to decide.
+    logger.info(
+        "owner echo matched no remaining bindable message after head %s; ignored",
+        head.id,
     )
+    return None
 
 
 def _album_diagnostic(
@@ -229,14 +236,19 @@ async def resolve_album_echo(
     if following and _matches(following, observed):
         await _attach(albums, following, observed, account_id=account_id)
         return None
+    # Unlike the one-message fallback notices handled by ``resolve_echo``, the
+    # bridge never emits an untracked Bot API album.  If the observed group does
+    # not match either the retired head or the next queued album, its identity
+    # is genuinely unknown and must stay visible to the owner rather than being
+    # silently accepted.
     raise UnconfirmedDeliveryError(
         _album_diagnostic(
             bridge_name,
-            expected=len(following),
+            expected=len(following or expected),
             observed=len(observed),
-            link_id=following[0].link_id if following else None,
+            link_id=(following or expected)[0].link_id,
         )
-        + " — no unbound album matches this echo"
+        + " — echo matched no delivered album"
     )
 
 

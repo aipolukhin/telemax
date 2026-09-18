@@ -614,17 +614,17 @@ class MaxMediaDelivery:
         would be several separate messages.
 
         Returns a part per Telegram message the group became, paired with the
-        item it carried. An attachment that could not be fetched leaves a
-        placeholder in the chat and no part here — which is a shorter list than
-        the caller expected, and deliberately: the caller compares the two and
-        refuses to guess which of its aliases went missing.
+        item it carried. A permanently oversized attachment leaves a visible
+        notice and no part here. A source/download failure escapes before the
+        first Telegram call so the durable job can retry it with a fresh MAX
+        URL instead of recording a placeholder as successful delivery.
         """
         async with AsyncExitStack() as stack:
             items: list[OutgoingMedia] = []
             for attachment in attachments:
                 local = await self._enter(stack, attachment, message)
                 if local is None:
-                    await self._notify_failure(attachment, bot_id, chat_id, reply_to)
+                    await self._notify_too_large(attachment, bot_id, chat_id, reply_to)
                     continue
                 items.append(
                     self._describe(
@@ -667,7 +667,7 @@ class MaxMediaDelivery:
                     attachment, chat_id=message.chat_id, message_id=message.message_id
                 )
             )
-        except (MediaTooLargeError, UnavailableMediaError):
+        except MediaTooLargeError:
             return None
         return local
 
@@ -806,14 +806,34 @@ class MaxMediaDelivery:
                 ),
                 reply_to=reply_to,
             )
-        except UnavailableMediaError:
-            logger.info("attachment %s could not be fetched", attachment.kind.value)
-            return await self._sender.send_text(
-                bot_id,
-                chat_id,
-                UNAVAILABLE_NOTICE.format(kind=KIND_NAMES.get(attachment.kind, "вложение")),
-                reply_to=reply_to,
+        except UnavailableMediaError as error:
+            if error.code == "source_missing":
+                # The attachment itself carries no locator. A fresh attempt
+                # would ask the same incomplete payload forever, so preserve
+                # the long-standing visible representation for this permanent
+                # case. Resolver/CDN failures below remain retryable.
+                logger.info(
+                    "attachment %s has no source locator; delivering a notice",
+                    attachment.kind.value,
+                )
+                return await self._sender.send_text(
+                    bot_id,
+                    chat_id,
+                    UNAVAILABLE_NOTICE.format(
+                        kind=KIND_NAMES.get(attachment.kind, "вложение")
+                    ),
+                    reply_to=reply_to,
+                )
+            # Nothing has reached Telegram yet. Let the outbox retry the whole
+            # job: the next attempt resolves a fresh MAX URL. Sending a fallback
+            # here used to mark the job DONE and then create a spurious owner
+            # echo ambiguity around the fallback itself.
+            logger.warning(
+                "attachment %s deferred before send (reason=%s)",
+                attachment.kind.value,
+                error.code,
             )
+            raise
 
     async def _deliver_unknown(
         self,
@@ -842,13 +862,16 @@ class MaxMediaDelivery:
             bot_id, chat_id, text, reply_to=reply_to, entities=caption_entities
         )
 
-    async def _notify_failure(
+    async def _notify_too_large(
         self, attachment: MaxAttachment, bot_id: int, chat_id: int, reply_to: int | None
     ) -> None:
         await self._sender.send_text(
             bot_id,
             chat_id,
-            UNAVAILABLE_NOTICE.format(kind=KIND_NAMES.get(attachment.kind, "вложение")),
+            TOO_LARGE_NOTICE.format(
+                kind=KIND_NAMES.get(attachment.kind, "вложение"),
+                limit=self._pipeline.limit_bytes // 1024 // 1024,
+            ),
             reply_to=reply_to,
         )
 
