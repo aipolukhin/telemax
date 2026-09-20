@@ -18,8 +18,10 @@ import pytest_asyncio
 from telethon.tl import types
 
 from bridge.media.store import TempFiles
+from bridge.retry import BackoffPolicy, OutboxWorker
 from bridge.routing.delivery import DeliveryPipe
 from bridge.routing.router import BridgeRouter, BridgeTarget
+from bridge.routing.text_chunks import MAX_TEXT_UTF16_LIMIT, utf16_units
 from bridge.storage import (
     BridgeStateRepository,
     Database,
@@ -388,6 +390,83 @@ async def test_a_replayed_new_message_is_deduped(wired: Any) -> None:
             owner_account_id=ACCOUNT,
         )
     assert len(wired.sender.calls) == 1, "one owner message → one job → one MAX send"
+
+
+async def test_a_long_owner_text_becomes_ordered_durable_max_messages(wired: Any) -> None:
+    replied = await wired.messages.claim_from_max(
+        bridge_name="mom",
+        max_chat_id=555,
+        max_message_id=777,
+        telegram_bot_id=BOT,
+        telegram_chat_id=ACCOUNT,
+    )
+    assert replied is not None
+    assert await wired.messages.bind_owner_message(
+        replied, account_id=ACCOUNT, owner_message_id=1001800
+    )
+    text = "а" * 3_500 + "\n\n" + "б" * 700
+
+    await wired.router.on_telegram_text(
+        bot_id=BOT,
+        telegram_chat_id=BOT,
+        telegram_message_id=1001881,
+        text=text,
+        reply_to_telegram_message_id=1001800,
+        owner_account_id=ACCOUNT,
+    )
+
+    assert len(wired.sender.calls) == 2
+    assert "".join(call["text"] for call in wired.sender.calls) == text
+    assert all(utf16_units(call["text"]) <= MAX_TEXT_UTF16_LIMIT for call in wired.sender.calls)
+    assert [call["reply_to"] for call in wired.sender.calls] == [777, None]
+    rows = await wired.database.query(
+        "SELECT state, source_key, payload_json FROM outbox"
+        " WHERE source_key LIKE ? ORDER BY id",
+        ("tg-owner-msg:100000001:1001881:text-part:%",),
+    )
+    assert [row["state"] for row in rows] == ["done", "done"]
+    assert all(row["payload_json"] == "{}" for row in rows)
+
+
+async def test_all_long_text_parts_are_durable_before_the_first_retry(wired: Any) -> None:
+    text = "🙂" * 2_001
+    wired.sender.fail = ConnectionError("MAX is down before the request")
+
+    with pytest.raises(ConnectionError):
+        await wired.router.on_telegram_text(
+            bot_id=BOT,
+            telegram_chat_id=BOT,
+            telegram_message_id=1001882,
+            text=text,
+            owner_account_id=ACCOUNT,
+        )
+
+    rows = await wired.database.query(
+        "SELECT state, created_at FROM outbox WHERE source_key LIKE ? ORDER BY id",
+        ("tg-owner-msg:100000001:1001882:text-part:%",),
+    )
+    assert [row["state"] for row in rows] == ["pending", "pending"]
+    assert len({row["created_at"] for row in rows}) == 1, "one batch transaction"
+
+    wired.sender.fail = None
+    wired.sender.calls.clear()
+    worker = OutboxWorker(
+        bridge_name="mom",
+        outbox=OutboxRepository(wired.database),
+        state=BridgeStateRepository(wired.database),
+        deliver=wired.sender,
+        policy=BackoffPolicy(initial_ms=1, max_ms=1, jitter=0),
+    )
+    assert await worker.drain_once()
+    assert await worker.drain_once()
+
+    assert "".join(call["text"] for call in wired.sender.calls) == text
+    assert all(utf16_units(call["text"]) <= MAX_TEXT_UTF16_LIMIT for call in wired.sender.calls)
+    states = await wired.database.query(
+        "SELECT state FROM outbox WHERE source_key LIKE ? ORDER BY id",
+        ("tg-owner-msg:100000001:1001882:text-part:%",),
+    )
+    assert [row["state"] for row in states] == ["done", "done"]
 
 
 async def test_media_job_stores_a_reference_and_no_bytes(wired: Any) -> None:

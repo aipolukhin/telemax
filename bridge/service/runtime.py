@@ -1883,6 +1883,42 @@ class BridgeService:
                     payload=payload,
                 )
             if kind == KIND_TG_TO_MAX_TEXT:
+                from bridge.routing.text_chunks import split_max_text, text_part_source_key
+
+                chunks = split_max_text(str(payload["text"]))
+                if len(chunks) > 1:
+                    # Compatibility path for an oversized job written by an
+                    # older process.  Fan it out before touching MAX; the batch
+                    # transaction means the parent can then finish without a
+                    # crash losing or interleaving its tail.
+                    assert self._messages is not None
+                    link_id = int(payload["link_id"])
+                    link = await self._messages.by_id(link_id)
+                    if link is None:
+                        raise RuntimeError("an oversized text job lost its mapping")
+                    base = f"legacy-text:{link_id}"
+                    await outbox.enqueue_batch(
+                        bridge_name=link.bridge_name,
+                        direction=Direction.TG_TO_MAX,
+                        items=[
+                            (
+                                KIND_TG_TO_MAX_TEXT,
+                                {
+                                    "max_chat_id": payload["max_chat_id"],
+                                    "text": chunk,
+                                    "reply_to": payload.get("reply_to") if index == 0 else None,
+                                    **({"link_id": link_id} if index == 0 else {}),
+                                },
+                                text_part_source_key(base, index=index, total=len(chunks)),
+                            )
+                            for index, chunk in enumerate(chunks)
+                        ],
+                    )
+                    logger.info(
+                        "split one legacy Telegram text into %s MAX messages",
+                        len(chunks),
+                    )
+                    return None
                 await sending()
                 sent = await _creating_send(
                     lambda: max_sender.send_text(

@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -380,6 +380,73 @@ class DeliveryPipe:
             bridge_name, direction=direction, before_id=job_id
         ):
             logger.debug("bridge %s: %s waits its turn behind an older send", bridge_name, kind)
+            return job_id, False
+        return await self._outbox.claim_for_attempt(
+            bridge_name=bridge_name,
+            direction=direction,
+            kind=kind,
+            payload=payload,
+            source_key=source_key,
+        )
+
+    async def enqueue_batch_in_order(
+        self,
+        *,
+        bridge_name: str,
+        direction: Direction,
+        items: Sequence[tuple[str, dict[str, Any], str]],
+    ) -> list[int]:
+        """Put every part of one logical message on disk before sending any.
+
+        The repository transaction fixes their relative order.  Actual claims
+        still go through :meth:`submit_in_order`, so an older conversation item
+        blocks the whole batch and inline delivery shares the worker's ordering
+        rule rather than inventing a second one.
+        """
+        storable = [
+            (kind, self._storable(payload, bridge_name=bridge_name, kind=kind), source_key)
+            for kind, payload, source_key in items
+        ]
+        return await self._outbox.enqueue_batch(
+            bridge_name=bridge_name,
+            direction=direction,
+            items=storable,
+        )
+
+    async def submit_in_kind_order(
+        self,
+        *,
+        bridge_name: str,
+        direction: Direction,
+        kind: str,
+        payload: dict[str, Any],
+        source_key: str,
+    ) -> tuple[int, bool]:
+        """Submit without overtaking an older job of the same representation.
+
+        Long text parts are all ``tg_to_max_text``.  Keeping their barrier
+        scoped to that kind preserves their order (and holds the next text
+        behind them) without letting an unrelated idempotent reaction mutation
+        wedge a perfectly deliverable message.
+        """
+        job_id = await self._outbox.enqueue(
+            bridge_name=bridge_name,
+            direction=direction,
+            kind=kind,
+            payload=self._storable(payload, bridge_name=bridge_name, kind=kind),
+            source_key=source_key,
+        )
+        if await self._outbox.older_undelivered_kind(
+            bridge_name,
+            direction=direction,
+            kind=kind,
+            before_id=job_id,
+        ):
+            logger.debug(
+                "bridge %s: %s waits behind an older job of the same kind",
+                bridge_name,
+                kind,
+            )
             return job_id, False
         return await self._outbox.claim_for_attempt(
             bridge_name=bridge_name,

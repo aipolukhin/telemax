@@ -710,6 +710,58 @@ class OutboxRepository:
             )
             return int(cursor.lastrowid or 0)
 
+    async def enqueue_batch(
+        self,
+        *,
+        bridge_name: str,
+        direction: Direction,
+        items: Sequence[tuple[str, dict[str, Any], str]],
+        ttl_ms: int | None = DEFAULT_TTL_MS,
+    ) -> list[int]:
+        """Persist an ordered set of idempotent jobs in one transaction.
+
+        Long text uses this before the first remote call.  Writing its parts one
+        at a time would leave a crash window in which a later Telegram message
+        could receive an outbox id between part one and part two, permanently
+        changing the order the worker must honour.  One transaction makes the
+        group appear whole, in order, or not at all.
+
+        Existing source keys are returned in place.  That makes replay safe and
+        lets a caller reconstruct the same batch after a restart without adding
+        a second copy of any part.
+        """
+        stamp = now_ms()
+        ids: list[int] = []
+        async with self._db.transaction() as connection:
+            for kind, payload, source_key in items:
+                async with connection.execute(
+                    "SELECT id FROM outbox WHERE source_key = ?", (source_key,)
+                ) as cursor:
+                    existing = await cursor.fetchone()
+                if existing is not None:
+                    ids.append(int(existing["id"]))
+                    continue
+                cursor = await connection.execute(
+                    "INSERT INTO outbox ("
+                    " bridge_name, direction, kind, payload_json, attempts,"
+                    " next_attempt_at, state, created_at, updated_at, source_key, expires_at)"
+                    " VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
+                    (
+                        bridge_name,
+                        direction.value,
+                        kind,
+                        json.dumps(payload, ensure_ascii=False),
+                        stamp,
+                        OutboxState.PENDING.value,
+                        stamp,
+                        stamp,
+                        source_key,
+                        stamp + ttl_ms if ttl_ms is not None else None,
+                    ),
+                )
+                ids.append(int(cursor.lastrowid or 0))
+        return ids
+
     async def claim_for_attempt(
         self,
         *,
@@ -1125,6 +1177,35 @@ class OutboxRepository:
             (
                 bridge_name,
                 direction.value,
+                before_id,
+                OutboxState.PENDING.value,
+                OutboxState.INFLIGHT.value,
+            ),
+        )
+        return row is not None
+
+    async def older_undelivered_kind(
+        self,
+        bridge_name: str,
+        *,
+        direction: Direction,
+        kind: str,
+        before_id: int,
+    ) -> bool:
+        """Whether an older job of this exact kind is still on its way.
+
+        Text fan-out uses this narrower barrier.  Its parts and the next text
+        must not overtake each other, while an idempotent reaction mutation is
+        not a text bubble and must not wedge the conversation behind it.
+        """
+        row = await self._db.query_one(
+            "SELECT 1 AS found FROM outbox"
+            " WHERE bridge_name = ? AND direction = ? AND kind = ? AND id < ?"
+            "  AND state IN (?, ?) LIMIT 1",
+            (
+                bridge_name,
+                direction.value,
+                kind,
                 before_id,
                 OutboxState.PENDING.value,
                 OutboxState.INFLIGHT.value,

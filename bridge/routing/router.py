@@ -88,6 +88,7 @@ from bridge.routing.owner_mutation import (
 )
 from bridge.routing.refusals import classify as classify_refusal
 from bridge.routing.settlement import settle_max_delivery_mapping
+from bridge.routing.text_chunks import split_max_text, text_part_source_key
 from bridge.storage import (
     BridgeStateRepository,
     Direction,
@@ -1531,22 +1532,59 @@ class BridgeRouter:
             target, bot_id, telegram_chat_id, telegram_message_id, owner_account_id
         )
 
-        payload = {
-            "max_chat_id": target.max_chat_id,
-            "text": text,
-            "reply_to": reply_to,
-            "link_id": link_id,
-        }
+        chunks = split_max_text(text)
         source_key = _source_key(bot_id, telegram_message_id, owner_account_id)
+        parts: list[tuple[dict[str, Any], str]] = []
+        for index, chunk in enumerate(chunks):
+            payload = {
+                "max_chat_id": target.max_chat_id,
+                "text": chunk,
+                # MAX should quote the original only once.  Repeating the reply
+                # on every bubble renders one logical answer as N answers.
+                "reply_to": reply_to if index == 0 else None,
+            }
+            # The canonical Telegram message resolves to the first MAX bubble.
+            # Later bubbles are still independently durable, but must not race
+            # to overwrite that one-to-one mapping with a different remote id.
+            if index == 0:
+                payload["link_id"] = link_id
+            parts.append(
+                (
+                    payload,
+                    text_part_source_key(source_key, index=index, total=len(chunks)),
+                )
+            )
+
+        if self._pipe is not None and len(parts) > 1:
+            await self._pipe.enqueue_batch_in_order(
+                bridge_name=target.name,
+                direction=Direction.TG_TO_MAX,
+                items=[(KIND_TG_TO_MAX_TEXT, payload, key) for payload, key in parts],
+            )
 
         try:
-            max_message_id = await self._deliver_to_max(
-                target=target,
-                kind=KIND_TG_TO_MAX_TEXT,
-                payload=payload,
-                source_key=source_key,
-                send=lambda: self._max.send_text(target.max_chat_id, text, reply_to=reply_to),
-            )
+            max_message_id: int | None = None
+            for payload, part_key in parts:
+                async def send_part(part: dict[str, Any] = payload) -> int | None:
+                    return await self._max.send_text(
+                        target.max_chat_id,
+                        str(part["text"]),
+                        reply_to=part.get("reply_to"),
+                    )
+
+                max_message_id = await self._deliver_to_max(
+                    target=target,
+                    kind=KIND_TG_TO_MAX_TEXT,
+                    payload=payload,
+                    source_key=part_key,
+                    send=send_part,
+                    same_kind_order=True,
+                )
+                if max_message_id is None:
+                    # The batch is already durable.  An older job or another
+                    # worker owns the head, so the shared queue will continue it
+                    # in order; sending a later part inline would overtake it.
+                    break
         except Exception as error:
             await self._state.note_error(target.name, str(error))
             refusal = classify_refusal(error)
@@ -1662,6 +1700,7 @@ class BridgeRouter:
         payload: dict[str, Any],
         source_key: str,
         send: Callable[[], Awaitable[int | None]],
+        same_kind_order: bool = False,
     ) -> int | None:
         """Carry one thing into MAX with a durable job behind it.
 
@@ -1681,7 +1720,10 @@ class BridgeRouter:
                 return None
             return await settle_max_delivery_mapping(self._messages, payload, sent)
 
-        job_id, ours = await self._pipe.submit(
+        submit = (
+            self._pipe.submit_in_kind_order if same_kind_order else self._pipe.submit
+        )
+        job_id, ours = await submit(
             bridge_name=target.name,
             direction=Direction.TG_TO_MAX,
             kind=kind,
