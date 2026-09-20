@@ -118,13 +118,6 @@ def _source_key(bot_id: int, telegram_message_id: int, owner_account_id: int | N
         return f"tg-owner-msg:{owner_account_id}:{telegram_message_id}"
     return f"tg:{bot_id}:{telegram_message_id}"
 
-# What the owner gets when they send something the bridge cannot carry yet.
-UNSUPPORTED_NOTICE = "Пока умею только текст — вложения появятся позже."
-
-# When an edit cannot reach MAX, say so instead of leaving the two sides
-# quietly out of step.
-
-
 class TelegramSender(Protocol):
     """The only thing routing needs from the Telegram side: creating a message.
 

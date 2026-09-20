@@ -26,6 +26,7 @@ from bridge.media.upload import plan_upload
 from bridge.routing.echo import media_echo_fingerprint, text_echo_fingerprint
 from bridge.telegram.forwards import is_mtproto_forward, mtproto_forward_name
 from bridge.telegram.mtproto_intake import OwnerMedia, OwnerMessage
+from bridge.telegram.rich_message import rich_message_to_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,8 @@ def owner_message_from(
     owner has them saved rather than as they call themselves, and it carries no
     stamp.
     """
-    text = markdown.unparse(message.message or "", message.entities or [])
+    rich_text = rich_message_to_markdown(getattr(message, "rich_message", None))
+    text = rich_text or markdown.unparse(message.message or "", message.entities or [])
     if is_mtproto_forward(message):
         # After the unparser, never before: it works from entity offsets over
         # the owner's own text, and a line put in front of it would move every

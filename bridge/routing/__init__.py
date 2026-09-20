@@ -10,7 +10,6 @@ from .adapters import (
 from .max_mutation import DELETED_NOTICE
 from .router import (
     OWN_MESSAGE_PREFIX,
-    UNSUPPORTED_NOTICE,
     BridgeRouter,
     BridgeTarget,
 )
@@ -18,7 +17,6 @@ from .router import (
 __all__ = [
     "DELETED_NOTICE",
     "OWN_MESSAGE_PREFIX",
-    "UNSUPPORTED_NOTICE",
     "BridgeRouter",
     "BridgeTarget",
     "MaxTextSender",

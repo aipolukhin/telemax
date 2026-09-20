@@ -292,6 +292,99 @@ def test_text_and_entities_survive_as_markdown() -> None:
     assert owner.media is None
 
 
+def test_premium_rich_message_blocks_become_readable_markdown() -> None:
+    rich = types.RichMessage(
+        blocks=[
+            types.PageBlockHeading1(types.TextPlain("План")),
+            types.PageBlockParagraph(
+                types.TextConcat(
+                    [
+                        types.TextPlain("Сначала "),
+                        types.TextBold(types.TextPlain("важное")),
+                        types.TextPlain(", потом "),
+                        types.TextUrl(types.TextPlain("ссылка"), "https://example.com", 0),
+                    ]
+                )
+            ),
+            types.PageBlockOrderedList(
+                [
+                    types.PageListOrderedItemText(
+                        types.TextPlain("Готово"), checkbox=True, checked=True, num="1"
+                    ),
+                    types.PageListOrderedItemText(
+                        types.TextPlain("Осталось"), checkbox=True, checked=False, num="2"
+                    ),
+                ]
+            ),
+            types.PageBlockBlockquote(
+                types.TextItalic(types.TextPlain("Тихая цитата")), types.TextEmpty()
+            ),
+            types.PageBlockPreformatted(types.TextPlain("echo ok"), "shell"),
+        ],
+        photos=[],
+        documents=[],
+    )
+    message = SimpleNamespace(
+        message="",
+        entities=[],
+        rich_message=rich,
+        id=10,
+        media=None,
+        grouped_id=None,
+        reply_to=None,
+    )
+
+    owner = owner_message_from(message, account_id=ACCOUNT, peer_id=BOT)
+
+    assert owner.text == (
+        "**План**\n\n"
+        "Сначала **важное**, потом [ссылка](https://example.com)\n\n"
+        "1. [x] Готово\n"
+        "2. [ ] Осталось\n\n"
+        "> _Тихая цитата_\n\n"
+        "```\n"
+        "echo ok\n"
+        "```"
+    )
+
+
+async def test_long_premium_rich_message_uses_the_durable_text_splitter(wired: Any) -> None:
+    rich = types.RichMessage(
+        blocks=[
+            types.PageBlockParagraph(types.TextPlain("а" * 3_500)),
+            types.PageBlockParagraph(types.TextPlain("б" * 700)),
+        ],
+        photos=[],
+        documents=[],
+    )
+    message = SimpleNamespace(
+        message="",
+        entities=[],
+        rich_message=rich,
+        id=1001883,
+        media=None,
+        grouped_id=None,
+        reply_to=None,
+    )
+    owner = owner_message_from(message, account_id=ACCOUNT, peer_id=BOT)
+
+    async def allowed() -> set[int]:
+        return {BOT}
+
+    await MtprotoIntake(router=wired.router, allowed_bots=allowed).on_owner_message(owner)
+
+    assert len(wired.sender.calls) == 2
+    assert "".join(call["text"] for call in wired.sender.calls) == owner.text
+    assert all(
+        utf16_units(call["text"]) <= MAX_TEXT_UTF16_LIMIT for call in wired.sender.calls
+    )
+    rows = await wired.database.query(
+        "SELECT state FROM outbox WHERE source_key LIKE ? ORDER BY id",
+        ("tg-owner-msg:100000001:1001883:text-part:%",),
+    )
+    assert [row["state"] for row in rows] == ["done", "done"]
+
+
 def test_a_media_reference_carries_only_a_locator() -> None:
     message = _doc(types.DocumentAttributeFilename(file_name="a.pdf"))
     owner = owner_message_from(message, account_id=ACCOUNT, peer_id=BOT)

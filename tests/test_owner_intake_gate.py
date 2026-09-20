@@ -83,6 +83,47 @@ async def test_the_hand_off_is_counted() -> None:
     assert hand_off.count == 1
 
 
+async def test_an_empty_bot_api_shell_is_silent_and_left_to_mtproto() -> None:
+    """Premium Rich Messages look empty to Bot API but are not unsupported."""
+    from datetime import UTC, datetime
+
+    from aiogram import Dispatcher
+    from aiogram.types import Chat, Message, Update, User
+
+    seen: list[tuple[int, int]] = []
+
+    async def note_seen(bot_id: int, message_id: int) -> None:
+        seen.append((bot_id, message_id))
+
+    hand_off = CountingHandOff()
+    router_obj = RecordingRouter()
+    dispatcher = Dispatcher()
+    dispatcher.include_router(
+        build_forwarding_router(  # type: ignore[arg-type]
+            router_obj,
+            on_owner_intake_suppressed=hand_off,
+            on_owner_message_seen=note_seen,
+        )
+    )
+    bot = FakeBot("1:aaa")
+    update = Update(
+        update_id=3,
+        message=Message(
+            message_id=3,
+            date=datetime.now(tz=UTC),
+            chat=Chat(id=111, type="private"),
+            from_user=User(id=111, is_bot=False, first_name="Someone"),
+        ),
+    )
+
+    await dispatcher.feed_update(bot, update)
+
+    assert bot.method_calls("send_message") == []
+    assert router_obj.texts == []
+    assert seen == [(1, 3)]
+    assert hand_off.count == 1
+
+
 async def test_a_command_is_not_counted_as_a_hand_off() -> None:
     """`/status` is the owner talking to the bridge, not to their contact."""
     hand_off = CountingHandOff()

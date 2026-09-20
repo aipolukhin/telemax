@@ -32,11 +32,7 @@ from bridge.telegram import (
 from bridge.telegram.commands import is_bot_command
 
 from .echo import OwnEchoes
-from .router import (
-    UNSUPPORTED_NOTICE,
-    BridgeRouter,
-    BridgeTarget,
-)
+from .router import BridgeRouter, BridgeTarget
 
 logger = logging.getLogger(__name__)
 
@@ -452,38 +448,41 @@ def build_forwarding_router(
             # was answered by the bot *and* delivered to the contact.
             return
 
-        if not text:
-            # Attachments are handled by the upload router, which runs first;
-            # anything reaching here with no text is something neither of us
-            # knows what to do with.
-            await message.answer(UNSUPPORTED_NOTICE)
-            return
-
         bot_id = message.bot.id if message.bot else 0
-        claim = own_echoes.claim(bot_id, text) if own_echoes is not None else None
-        if claim is not None:
-            # A message the bridge itself placed on the owner's behalf (see
-            # `routing/echo.py`). It is already in MAX — the owner wrote it there
-            # — and sending it back would show them their own line twice. The copy
-            # is also where the bot's own id for it appears, which is what makes a
-            # reply to it resolvable.
-            if claim.placed is not None:
-                await bridge_router.note_own_placement(
-                    bot_id=bot_id,
-                    telegram_message_id=message.message_id,
-                    placed=claim.placed,
-                )
-            return
-        # Not an echo, so it is the owner writing: their session carries it.
-        # Dropping *after* the echo check is what keeps own-voice suppression
-        # intact while leaving the message itself to the one transport that owns
-        # it.
-        #
-        # One thing is taken from it and only one: the bot's own id for the
-        # message, which nothing else has and which a bot needs to put a
-        # reaction on it. An observation, not an intake — see `owner_binding`.
-        if on_owner_message_seen is not None:
-            await on_owner_message_seen(bot_id, message.message_id)
+        if not text:
+            # The Bot API does not expose every MTProto message shape. Premium
+            # Rich Messages are the important example: the visible post lives
+            # in `rich_message.blocks`, while this copy arrives with neither
+            # text nor a known attachment. Owner MTProto is authoritative and
+            # carries it; answering here would produce a false "unsupported"
+            # message next to a delivery that may already be on its way.
+            if on_owner_message_seen is not None:
+                await on_owner_message_seen(bot_id, message.message_id)
+        else:
+            claim = own_echoes.claim(bot_id, text) if own_echoes is not None else None
+            if claim is not None:
+                # A message the bridge itself placed on the owner's behalf (see
+                # `routing/echo.py`). It is already in MAX — the owner wrote it there
+                # — and sending it back would show them their own line twice. The copy
+                # is also where the bot's own id for it appears, which is what makes a
+                # reply to it resolvable.
+                if claim.placed is not None:
+                    await bridge_router.note_own_placement(
+                        bot_id=bot_id,
+                        telegram_message_id=message.message_id,
+                        placed=claim.placed,
+                    )
+                return
+            # Not an echo, so it is the owner writing: their session carries it.
+            # Dropping *after* the echo check is what keeps own-voice suppression
+            # intact while leaving the message itself to the one transport that owns
+            # it.
+            #
+            # One thing is taken from it and only one: the bot's own id for the
+            # message, which nothing else has and which a bot needs to put a
+            # reaction on it. An observation, not an intake — see `owner_binding`.
+            if on_owner_message_seen is not None:
+                await on_owner_message_seen(bot_id, message.message_id)
         await note_owner_intake_suppressed(on_owner_intake_suppressed, bot_id)
 
     return router
